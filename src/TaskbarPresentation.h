@@ -16,6 +16,15 @@ std::vector<TaskbarMetricCard> BuildTaskbarMetricCards(
     const UsageSnapshot& usage,
     const LocalUsageSnapshot& localUsage);
 
+// Simple mode intentionally shares the accepted taskbar's high-value card set.
+std::vector<TaskbarMetricCard> BuildSimpleMetricCards(
+    const UsageSnapshot& usage,
+    const LocalUsageSnapshot& localUsage);
+
+// Standard mode adds detailed local scopes without creating another pricing path.
+std::vector<TaskbarMetricCard> BuildStandardUsageMetricCards(
+    const LocalUsageSnapshot& localUsage);
+
 // Width is derived from the measured content of each card; callers provide
 // current-DPI text widths so no fixed taskbar canvas is baked into layout.
 int CalculateTaskbarCardRowWidth(
