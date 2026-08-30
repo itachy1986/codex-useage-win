@@ -219,6 +219,54 @@ void TestTaskbarPresentation() {
         "Taskbar width is content-driven and changes when visible cards change");
 }
 
+void TestStandardAndSimplePresentations() {
+    UsageSnapshot usage;
+    usage.success = true;
+    usage.fiveHour.available = true;
+    usage.fiveHour.remainingPercent = 42;
+    usage.weekly.available = true;
+    usage.weekly.remainingPercent = 73;
+
+    LocalUsageSnapshot local;
+    local.task.available = true;
+    local.task.usage.totalTokens = 1000000;
+    local.task.byModel[L"gpt-5.6-sol"].inputTokens = 1000000;
+    local.last.available = true;
+    local.last.usage.totalTokens = 110;
+    local.last.byModel[L"unpriced-model"].inputTokens = 100;
+    local.today.available = true;
+    local.weekly.available = true;
+    local.weekly.byModel[L"gpt-5.6-sol"].inputTokens = 1000000;
+    local.weekly.byModel[L"unpriced-model"].inputTokens = 100;
+    local.tillNow.available = true;
+    local.tillNow.usage.totalTokens = 100;
+    local.tillNow.byModel[L"unpriced-model"].inputTokens = 100;
+
+    const auto standard = BuildStandardUsageMetricCards(local);
+    Expect(standard.size() == 5 && standard[0].label == L"Task" && standard[1].label == L"Last"
+            && standard[2].label == L"Today" && standard[3].label == L"周消费" && standard[4].label == L"总消费",
+        "Standard presentation exposes Task, Last, Today, weekly cost, and lifetime cost from shared scopes");
+    Expect(standard[0].value.find(L"≈$4.00") != std::wstring::npos
+            && standard[1].value.find(L"≥$0.00") != std::wstring::npos
+            && standard[2].value.find(L"≈$0.00") != std::wstring::npos
+            && standard[3].value.find(L"≥$4.00") != std::wstring::npos
+            && standard[4].value.find(L"≥$0.00") != std::wstring::npos,
+        "Standard preserves complete, lower-bound, and valid-zero pricing semantics");
+
+    const auto simple = BuildSimpleMetricCards(usage, local);
+    Expect(simple.size() == 4 && simple[0].label == L"5H" && simple[1].label == L"周"
+            && simple[2].label == L"周消费" && simple[3].label == L"总消费",
+        "Simple presentation exposes only optional 5H, weekly quota, weekly cost, and lifetime cost");
+    usage.fiveHour.available = false;
+    const auto simpleWithoutFiveHour = BuildSimpleMetricCards(usage, local);
+    Expect(simpleWithoutFiveHour.size() == 3 && simpleWithoutFiveHour[0].label == L"周",
+        "Simple removes its complete 5H card when the remote lane is unavailable");
+    for (const auto& card : standard) {
+        Expect(card.label.find(L'|') == std::wstring::npos && card.value.find(L'|') == std::wstring::npos,
+            "Standard card descriptors never regress to flat pipe-separated status text");
+    }
+}
+
 void TestFixturesAreRedacted() {
     const std::string fixture = TokenEvent("2026-08-30T10:00:00", "gpt-5.6-sol", 1, 0, 0, 1, 2);
     Expect(fixture.find("access_token") == std::string::npos && fixture.find("content") == std::string::npos,
@@ -233,6 +281,7 @@ int main() {
     TestLocalDateAndMixedModelAttribution();
     TestWeeklyCycleAndIncompleteLifetimeCost();
     TestTaskbarPresentation();
+    TestStandardAndSimplePresentations();
     TestFixturesAreRedacted();
     return failures == 0 ? 0 : 1;
 }

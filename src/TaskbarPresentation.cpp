@@ -15,6 +15,22 @@ std::wstring FormatCost(const LocalUsageScope& scope) {
     return money;
 }
 
+std::wstring FormatCompactTokens(long long tokens) {
+    const wchar_t* unit = L"";
+    double value = static_cast<double>(tokens);
+    if (tokens >= 1000000000LL) { value /= 1000000000.0; unit = L"B"; }
+    else if (tokens >= 1000000LL) { value /= 1000000.0; unit = L"M"; }
+    else if (tokens >= 1000LL) { value /= 1000.0; unit = L"K"; }
+    wchar_t buffer[32] = {};
+    swprintf_s(buffer, L"%.1f%s", value, unit);
+    return buffer;
+}
+
+std::wstring FormatTokenAndCost(const LocalUsageScope& scope) {
+    if (!scope.available) return L"N/A";
+    return FormatCompactTokens(scope.usage.totalTokens) + L" · " + FormatCost(scope);
+}
+
 std::wstring FormatRemaining(bool success, const UsageWindow& window) {
     return success && window.available ? std::to_wstring(window.remainingPercent) + L"%" : L"N/A";
 }
@@ -32,6 +48,23 @@ std::vector<TaskbarMetricCard> BuildTaskbarMetricCards(
     cards.push_back({L"周消费", FormatCost(localUsage.weekly)});
     cards.push_back({L"总消费", FormatCost(localUsage.tillNow)});
     return cards;
+}
+
+std::vector<TaskbarMetricCard> BuildSimpleMetricCards(
+    const UsageSnapshot& usage,
+    const LocalUsageSnapshot& localUsage) {
+    return BuildTaskbarMetricCards(usage, localUsage);
+}
+
+std::vector<TaskbarMetricCard> BuildStandardUsageMetricCards(
+    const LocalUsageSnapshot& localUsage) {
+    return {
+        {L"Task", FormatTokenAndCost(localUsage.task)},
+        {L"Last", FormatTokenAndCost(localUsage.last)},
+        {L"Today", FormatTokenAndCost(localUsage.today)},
+        {L"周消费", FormatCost(localUsage.weekly)},
+        {L"总消费", FormatTokenAndCost(localUsage.tillNow)},
+    };
 }
 
 int CalculateTaskbarCardRowWidth(

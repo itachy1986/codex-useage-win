@@ -22,7 +22,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"CodexUsageBarWindow";
 constexpr const wchar_t* kCurrentVersion = APP_VERSION_W;
 // Bumped when default geometry / full-mode layout changes.
-constexpr int kLayoutVersion = 10;
+constexpr int kLayoutVersion = 11;
 constexpr UINT kCommandRefresh = 1;
 constexpr UINT kCommandExit = 2;
 constexpr UINT kCommandResetPosition = 3;
@@ -42,9 +42,9 @@ constexpr UINT kCommandFullMode = 16;
 constexpr UINT kCommandTaskbarMode = 17;
 constexpr UINT kCommandRefreshToken = 18;
 constexpr int kDefaultWidgetWidth = 420;
-constexpr int kMinimumWidgetWidth = 360;
-constexpr int kSimpleDefaultWidgetWidth = 240;
-constexpr int kSimpleMinimumWidgetWidth = 220;
+constexpr int kMinimumWidgetWidth = 420;
+constexpr int kSimpleDefaultWidgetWidth = 300;
+constexpr int kSimpleMinimumWidgetWidth = 280;
 constexpr int kTaskbarWidgetHeight = 46;
 constexpr int kDesktopMargin = 18;
 constexpr int kHorizontalPadding = 14;
@@ -124,12 +124,12 @@ int RectHeight(const RECT& rect) {
 
 int CalculateDetailedMinimumWidgetHeight(HWND hwnd, int width) {
     (void)width;
-    // Weekly-only compact card (1 credit row), buttons packed under the bar.
-    return ScaleForDpi(hwnd, 210);
+    // Account controls plus a five-card local-usage grid.
+    return ScaleForDpi(hwnd, 380);
 }
 
 int CalculateSimpleMinimumWidgetHeight(HWND hwnd) {
-    return ScaleForDpi(hwnd, 132);
+    return ScaleForDpi(hwnd, 140);
 }
 
 int CalculateTaskbarWidgetHeight(HWND hwnd) {
@@ -216,21 +216,6 @@ std::wstring FormatNumberNoUnit(double value) {
     wchar_t buffer[32] = {};
     swprintf_s(buffer, L"%.1f", value);
     return buffer;
-}
-
-std::wstring FormatCompactTokens(long long tokens) {
-    const wchar_t* unit = L""; double value = static_cast<double>(tokens);
-    if (tokens >= 1000000000LL) { value /= 1000000000.0; unit = L"B"; }
-    else if (tokens >= 1000000LL) { value /= 1000000.0; unit = L"M"; }
-    else if (tokens >= 1000LL) { value /= 1000.0; unit = L"K"; }
-    wchar_t buffer[32] = {}; swprintf_s(buffer, L"%.1f%s", value, unit); return buffer;
-}
-
-std::wstring FormatScope(const wchar_t* label, const LocalUsageScope& scope) {
-    const CostEstimate cost = EstimateApiEquivalentCost(scope);
-    if (!cost.available || !cost.complete) return std::wstring(label) + L" " + (scope.available ? FormatCompactTokens(scope.usage.totalTokens) : L"N/A") + L" ≈N/A";
-    wchar_t money[32] = {}; swprintf_s(money, L"$%.2f", cost.usd);
-    return std::wstring(label) + L" " + FormatCompactTokens(scope.usage.totalTokens) + L" ≈" + money;
 }
 
 PaceInfo BuildPaceInfo(const UsageSnapshot& snapshot) {
@@ -1297,24 +1282,13 @@ std::wstring AppBarWindow::BuildResetCreditsExpiryText() const {
 }
 
 RECT AppBarWindow::GetResetCreditButtonRect(const RECT& clientRect) const {
-    if (taskbarMode_) {
+    if (taskbarMode_ || simpleMode_) {
         return {};
     }
 
-    const int padX = ScaleForDpi(hwnd_, simpleMode_ ? 12 : kHorizontalPadding);
-    const int buttonWidth = ScaleForDpi(hwnd_, simpleMode_ ? 56 : 72);
-    const int buttonHeight = ScaleForDpi(hwnd_, simpleMode_ ? 18 : 22);
-
-    if (simpleMode_) {
-        const int footerHeight = ScaleForDpi(hwnd_, 16);
-        const int resetBandHeight = ScaleForDpi(hwnd_, 18);
-        const int buttonTop = clientRect.bottom - footerHeight - resetBandHeight - ScaleForDpi(hwnd_, 2);
-        return MakeRect(
-            clientRect.right - padX - buttonWidth,
-            buttonTop,
-            clientRect.right - padX,
-            buttonTop + buttonHeight);
-    }
+    const int padX = ScaleForDpi(hwnd_, kHorizontalPadding);
+    const int buttonWidth = ScaleForDpi(hwnd_, 72);
+    const int buttonHeight = ScaleForDpi(hwnd_, 22);
 
     // Full mode: button sits in the reset-credit strip above the footer.
     // Approximate strip top from the bottom using the same reserved height as layout.
@@ -1330,7 +1304,7 @@ RECT AppBarWindow::GetResetCreditButtonRect(const RECT& clientRect) const {
 }
 
 bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
-    if (taskbarMode_) {
+    if (taskbarMode_ || simpleMode_) {
         return false;
     }
 
@@ -1726,137 +1700,36 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
     }
 
     if (simpleMode_) {
-        fillRect(MakeRect(clientRect.left + 2, clientRect.top + 3, clientRect.right + 2, clientRect.bottom + 3), shadow);
-        fillRect(clientRect, background);
-        drawRectBorder(clientRect, border);
-
-        const bool loadFailed = !snapshot_.success && !snapshot_.errorMessage.empty();
-        const bool showFive = snapshot_.success && snapshot_.fiveHour.available;
-        const bool showWeek = snapshot_.success && snapshot_.weekly.available;
-        const bool exhausted = snapshot_.success && (
-            (showFive && snapshot_.fiveHour.remainingPercent <= 0)
-            || (showWeek && snapshot_.weekly.remainingPercent <= 0));
-        const bool warning = snapshot_.success &&
-            !exhausted &&
-            ((showFive && snapshot_.fiveHour.remainingPercent <= 15)
-                || (showWeek && snapshot_.weekly.remainingPercent <= 15)
-                || pace.isOver);
-        const wchar_t* statusText = !snapshot_.success
-            ? (loadFailed
-                ? LocalizeText(L"Failed", L"失败")
-                : LocalizeText(L"Loading", L"加载中"))
-            : (exhausted
-                ? LocalizeText(L"Exhausted", L"用尽")
-                : (warning ? LocalizeText(L"Tight", L"紧张") : LocalizeText(L"Normal", L"正常")));
-        const COLORREF statusColor = !snapshot_.success
-            ? (loadFailed
-                ? (lightTheme_ ? RGB(196, 54, 32) : RGB(255, 144, 120))
-                : textSecondary)
-            : (exhausted ? (lightTheme_ ? RGB(196, 54, 32) : RGB(255, 144, 120))
-                         : (warning ? (lightTheme_ ? RGB(184, 121, 38) : RGB(233, 180, 91))
-                                    : (lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163))));
-        const COLORREF dayCard = lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46);
-        const COLORREF weekCard = lightTheme_ ? RGB(239, 247, 226) : RGB(47, 59, 35);
-        const std::wstring versionStatusText = GetVersionStatusText(true);
-        const int topBandHeight = ScaleForDpi(hwnd_, 34);
-        const int innerPad = ScaleForDpi(hwnd_, 12);
-        const int cardGap = ScaleForDpi(hwnd_, 10);
-        const int footerHeight = ScaleForDpi(hwnd_, 16);
-
-        RECT titleRect = MakeRect(clientRect.left + innerPad, clientRect.top + ScaleForDpi(hwnd_, 6),
-            clientRect.right - innerPad - ScaleForDpi(hwnd_, 66), clientRect.top + topBandHeight);
-        RECT statusRect = MakeRect(clientRect.right - innerPad - ScaleForDpi(hwnd_, 54), clientRect.top + ScaleForDpi(hwnd_, 8),
-            clientRect.right - innerPad, clientRect.top + ScaleForDpi(hwnd_, 28));
-        drawTextBlock(textFormatMetricValue_.Get(), LocalizeText(L"Remaining", L"剩余额度"), titleRect, textPrimary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-        drawTextBlock(textFormatMetricLabel_.Get(), statusText, statusRect, statusColor,
-            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-
-        const int resetBandHeight = ScaleForDpi(hwnd_, 18);
-        RECT cardsRect = MakeRect(clientRect.left + innerPad, clientRect.top + topBandHeight + ScaleForDpi(hwnd_, 2),
-            clientRect.right - innerPad,
-            clientRect.bottom - footerHeight - resetBandHeight - ScaleForDpi(hwnd_, 6));
-
-        auto drawSimpleCard = [&](const RECT& cardRect, COLORREF cardColor, const wchar_t* label, const std::wstring& value) {
-            fillRect(cardRect, cardColor);
-            RECT labelRect = MakeRect(cardRect.left + innerPad, cardRect.top + ScaleForDpi(hwnd_, 8),
-                cardRect.right - innerPad, cardRect.top + ScaleForDpi(hwnd_, 24));
-            RECT valueRect = MakeRect(cardRect.left + innerPad, cardRect.top + ScaleForDpi(hwnd_, 24),
-                cardRect.right - innerPad, cardRect.bottom - ScaleForDpi(hwnd_, 8));
-            drawTextBlock(textFormatMetricLabel_.Get(), label, labelRect, textSecondary,
-                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-            drawTextBlock(textFormatDelta_.Get(), value, valueRect, textPrimary,
-                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        };
-
-        if (showFive && showWeek) {
-            const int cardWidth = (RectWidth(cardsRect) - cardGap) / 2;
-            RECT dayRect = MakeRect(cardsRect.left, cardsRect.top, cardsRect.left + cardWidth, cardsRect.bottom);
-            RECT weekRect = MakeRect(dayRect.right + cardGap, cardsRect.top, cardsRect.right, cardsRect.bottom);
-            drawSimpleCard(dayRect, dayCard, LocalizeText(L"5h left", L"5小时剩余"),
-                FormatPercent(snapshot_.fiveHour.remainingPercent));
-            drawSimpleCard(weekRect, weekCard, LocalizeText(L"Week left", L"本周剩余"),
-                FormatPercent(snapshot_.weekly.remainingPercent));
-        } else {
-            const std::wstring value = snapshot_.success
-                ? FormatPercent(showFive ? snapshot_.fiveHour.remainingPercent : snapshot_.weekly.remainingPercent)
-                : L"--";
-            drawSimpleCard(
-                cardsRect,
-                showFive ? dayCard : weekCard,
-                showFive ? LocalizeText(L"5h left", L"5小时剩余") : LocalizeText(L"Week left", L"本周剩余"),
-                value);
+        fillRect(MakeRect(clientRect.left + 1, clientRect.top + 2, clientRect.right + 1, clientRect.bottom + 2), shadow);
+        fillRect(clientRect, lightTheme_ ? RGB(246, 248, 247) : RGB(20, 24, 22));
+        const int outerPad = ScaleForDpi(hwnd_, 10);
+        const int gap = ScaleForDpi(hwnd_, 6);
+        const int corner = ScaleForDpi(hwnd_, 9);
+        const int cardPad = ScaleForDpi(hwnd_, 8);
+        const auto cards = BuildSimpleMetricCards(snapshot_, localUsage_);
+        const int rows = static_cast<int>((cards.size() + 1) / 2);
+        const int cardHeight = std::max(1, (RectHeight(clientRect) - outerPad * 2 - std::max(0, rows - 1) * gap) / std::max(1, rows));
+        const COLORREF cardFill = lightTheme_ ? RGB(255, 255, 255) : RGB(39, 46, 42);
+        const COLORREF cardBorder = lightTheme_ ? RGB(218, 224, 220) : RGB(71, 81, 75);
+        for (size_t index = 0; index < cards.size(); ++index) {
+            const int row = static_cast<int>(index / 2);
+            const int column = static_cast<int>(index % 2);
+            const bool finalSingle = index + 1 == cards.size() && (cards.size() % 2) == 1;
+            const int cardWidth = finalSingle
+                ? RectWidth(clientRect) - outerPad * 2
+                : (RectWidth(clientRect) - outerPad * 2 - gap) / 2;
+            const int left = clientRect.left + outerPad + (finalSingle ? 0 : column * (cardWidth + gap));
+            const int top = clientRect.top + outerPad + row * (cardHeight + gap);
+            const RECT rect = MakeRect(left, top, left + cardWidth, top + cardHeight);
+            fillRoundedRect(rect, corner, cardFill);
+            drawRoundedBorder(rect, corner, cardBorder);
+            drawTextBlock(textFormatKicker_.Get(), cards[index].label,
+                MakeRect(rect.left + cardPad, rect.top + ScaleForDpi(hwnd_, 4), rect.right - cardPad, rect.top + ScaleForDpi(hwnd_, 20)),
+                textSecondary, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            drawTextBlock(textFormatMetricValue_.Get(), cards[index].value,
+                MakeRect(rect.left + cardPad, rect.top + ScaleForDpi(hwnd_, 18), rect.right - cardPad, rect.bottom - ScaleForDpi(hwnd_, 4)),
+                textPrimary, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         }
-
-        const std::wstring resetSummary = BuildResetCreditsSummaryText();
-        const std::wstring resetExpiry = BuildResetCreditsExpiryText();
-        RECT resetSummaryRect = MakeRect(clientRect.left + innerPad, cardsRect.bottom + ScaleForDpi(hwnd_, 2),
-            clientRect.right - innerPad - ScaleForDpi(hwnd_, 60), cardsRect.bottom + resetBandHeight);
-        drawTextBlock(textFormatFoot_.Get(), resetSummary + L" · " + resetExpiry, resetSummaryRect, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-
-        const bool canUseReset = snapshot_.success
-            && snapshot_.resetCredits.fetched
-            && snapshot_.resetCredits.availableCount > 0
-            && !resetCreditInFlight_;
-        RECT resetButtonRect = GetResetCreditButtonRect(clientRect);
-        resetCreditButtonRect_ = resetButtonRect;
-        if (resetButtonRect.right > resetButtonRect.left) {
-            const COLORREF buttonBg = !canUseReset
-                ? (lightTheme_ ? RGB(230, 233, 230) : RGB(48, 54, 50))
-                : (resetCreditConfirmStep_ > 0
-                    ? (lightTheme_ ? RGB(255, 232, 214) : RGB(84, 52, 30))
-                    : (lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46)));
-            const COLORREF buttonText = !canUseReset
-                ? textSecondary
-                : (resetCreditConfirmStep_ > 0
-                    ? (lightTheme_ ? RGB(176, 78, 18) : RGB(255, 186, 120))
-                    : heroValue);
-            fillRect(resetButtonRect, buttonBg);
-            drawRectBorder(resetButtonRect, border);
-            std::wstring buttonLabel = LocalizeText(L"Use", L"使用");
-            if (resetCreditInFlight_) {
-                buttonLabel = LocalizeText(L"...", L"...");
-            } else if (resetCreditConfirmStep_ == 1) {
-                buttonLabel = LocalizeText(L"1/2", L"1/2");
-            } else if (resetCreditConfirmStep_ == 2) {
-                buttonLabel = LocalizeText(L"2/2", L"2/2");
-            }
-            drawTextBlock(textFormatFoot_.Get(), buttonLabel, resetButtonRect, buttonText,
-                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        }
-
-        const std::wstring refreshCountdownText = refreshInFlight_
-            ? std::wstring(LocalizeText(L"Refreshing", L"刷新中"))
-            : FormatRefreshCountdown(refreshCountdownSeconds_);
-        RECT footerLeftRect = MakeRect(clientRect.left + innerPad, clientRect.bottom - footerHeight - ScaleForDpi(hwnd_, 1),
-            clientRect.right / 2, clientRect.bottom - ScaleForDpi(hwnd_, 1));
-        RECT footerRightRect = MakeRect(clientRect.right / 2, clientRect.bottom - footerHeight - ScaleForDpi(hwnd_, 1),
-            clientRect.right - innerPad, clientRect.bottom - ScaleForDpi(hwnd_, 1));
-        drawTextBlock(textFormatFoot_.Get(), versionStatusText, footerLeftRect, updateAvailable_ ? heroValue : textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        drawTextBlock(textFormatFoot_.Get(), refreshCountdownText, footerRightRect, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
         return;
     }
 
@@ -2094,6 +1967,38 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
             snapshot_.weekly,
             pace.expectedUsedPercent);
     }
+
+    // Local accounting is visually separated from account and reset controls.
+    y += ScaleForDpi(hwnd_, 10);
+    const auto localCards = BuildStandardUsageMetricCards(localUsage_);
+    const int localTitleHeight = ScaleForDpi(hwnd_, 18);
+    RECT localTitleRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + localTitleHeight);
+    drawTextBlock(textFormatMetricLabel_.Get(), LocalizeText(L"Local usage", L"本地用量"), localTitleRect, textSecondary,
+        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+    y = localTitleRect.bottom + ScaleForDpi(hwnd_, 4);
+    const int localGap = ScaleForDpi(hwnd_, 6);
+    const int localCardHeight = ScaleForDpi(hwnd_, 44);
+    const int localCardWidth = (RectWidth(clientRect) - padX * 2 - localGap) / 2;
+    const COLORREF localCardFill = lightTheme_ ? RGB(255, 255, 255) : RGB(39, 46, 42);
+    for (size_t index = 0; index < localCards.size(); ++index) {
+        const int row = static_cast<int>(index / 2);
+        const int column = static_cast<int>(index % 2);
+        const bool finalSingle = index + 1 == localCards.size() && (localCards.size() % 2) == 1;
+        const int width = finalSingle ? RectWidth(clientRect) - padX * 2 : localCardWidth;
+        const int left = clientRect.left + padX + (finalSingle ? 0 : column * (localCardWidth + localGap));
+        const int top = y + row * (localCardHeight + localGap);
+        const RECT rect = MakeRect(left, top, left + width, top + localCardHeight);
+        fillRoundedRect(rect, ScaleForDpi(hwnd_, 8), localCardFill);
+        drawRoundedBorder(rect, ScaleForDpi(hwnd_, 8), border);
+        drawTextBlock(textFormatKicker_.Get(), localCards[index].label,
+            MakeRect(rect.left + ScaleForDpi(hwnd_, 9), rect.top + ScaleForDpi(hwnd_, 3), rect.right - ScaleForDpi(hwnd_, 9), rect.top + ScaleForDpi(hwnd_, 17)),
+            textSecondary, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        drawTextBlock(textFormatMetricValue_.Get(), localCards[index].value,
+            MakeRect(rect.left + ScaleForDpi(hwnd_, 9), rect.top + ScaleForDpi(hwnd_, 15), rect.right - ScaleForDpi(hwnd_, 9), rect.bottom - ScaleForDpi(hwnd_, 3)),
+            textPrimary, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+    }
+    y += ((static_cast<int>(localCards.size()) + 1) / 2) * localCardHeight
+        + std::max(0, (static_cast<int>(localCards.size()) + 1) / 2 - 1) * localGap;
 
     // Action buttons packed under content (no large empty middle gap).
     y += ScaleForDpi(hwnd_, 8);
