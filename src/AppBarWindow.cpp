@@ -44,9 +44,9 @@ constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 360;
 constexpr int kSimpleDefaultWidgetWidth = 240;
 constexpr int kSimpleMinimumWidgetWidth = 220;
-constexpr int kTaskbarDefaultWidgetWidth = 184;
-constexpr int kTaskbarMinimumWidgetWidth = 160;
-constexpr int kTaskbarWidgetHeight = 46;
+constexpr int kTaskbarDefaultWidgetWidth = 1004;
+constexpr int kTaskbarMinimumWidgetWidth = 720;
+constexpr int kTaskbarWidgetHeight = 34;
 constexpr int kDesktopMargin = 18;
 constexpr int kHorizontalPadding = 14;
 constexpr int kVerticalPadding = 12;
@@ -54,6 +54,7 @@ constexpr int kResizeGrip = 12;
 constexpr long long kDaySeconds = 24LL * 60 * 60;
 constexpr long long kWeekSeconds = 7LL * kDaySeconds;
 constexpr int kReleaseCheckIntervalSeconds = 6 * 60 * 60;
+constexpr int kLocalUsageRefreshIntervalSeconds = 300;
 
 int SanitizeRefreshIntervalSeconds(int seconds) {
     switch (seconds) {
@@ -218,6 +219,21 @@ std::wstring FormatNumberNoUnit(double value) {
     return buffer;
 }
 
+std::wstring FormatCompactTokens(long long tokens) {
+    const wchar_t* unit = L""; double value = static_cast<double>(tokens);
+    if (tokens >= 1000000000LL) { value /= 1000000000.0; unit = L"B"; }
+    else if (tokens >= 1000000LL) { value /= 1000000.0; unit = L"M"; }
+    else if (tokens >= 1000LL) { value /= 1000.0; unit = L"K"; }
+    wchar_t buffer[32] = {}; swprintf_s(buffer, L"%.1f%s", value, unit); return buffer;
+}
+
+std::wstring FormatScope(const wchar_t* label, const LocalUsageScope& scope) {
+    const CostEstimate cost = EstimateApiEquivalentCost(scope);
+    if (!cost.available || !cost.complete) return std::wstring(label) + L" " + (scope.available ? FormatCompactTokens(scope.usage.totalTokens) : L"N/A") + L" ≈N/A";
+    wchar_t money[32] = {}; swprintf_s(money, L"$%.2f", cost.usd);
+    return std::wstring(label) + L" " + FormatCompactTokens(scope.usage.totalTokens) + L" ≈" + money;
+}
+
 PaceInfo BuildPaceInfo(const UsageSnapshot& snapshot) {
     PaceInfo info;
     if (!snapshot.success) {
@@ -305,6 +321,7 @@ bool AppBarWindow::Create() {
     SetTimer(hwnd_, kCountdownTimerId, 1000, nullptr);
     RestartRefreshTimer();
     RequestRefresh(true);
+    RequestLocalUsageRefresh();
     RequestLatestReleaseCheck(true);
     return true;
 }
@@ -343,8 +360,12 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 }
                 refreshCountdownSeconds_ = std::max(0, refreshCountdownSeconds_ - 1);
                 releaseCheckCountdownSeconds_ = std::max(0, releaseCheckCountdownSeconds_ - 1);
+                localUsageRefreshCountdownSeconds_ = std::max(0, localUsageRefreshCountdownSeconds_ - 1);
                 if (releaseCheckCountdownSeconds_ == 0) {
                     RequestLatestReleaseCheck(false);
+                }
+                if (localUsageRefreshCountdownSeconds_ == 0) {
+                    RequestLocalUsageRefresh();
                 }
                 InvalidateRect(hwnd_, nullptr, FALSE);
             } else if (wParam == kRefreshTimerId) {
@@ -473,6 +494,9 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case kTokenRefreshedMessage:
             OnTokenRefreshed(reinterpret_cast<TokenRefreshResult*>(lParam));
+            return 0;
+        case kLocalUsageUpdatedMessage:
+            OnLocalUsageUpdated(reinterpret_cast<LocalUsageSnapshot*>(lParam));
             return 0;
 
         case WM_DESTROY:
@@ -1125,6 +1149,27 @@ void AppBarWindow::OnUsageUpdated(UsageSnapshot* snapshot) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void AppBarWindow::RequestLocalUsageRefresh() {
+    if (localUsageRefreshInFlight_.exchange(true)) {
+        return;
+    }
+    localUsageRefreshCountdownSeconds_ = kLocalUsageRefreshIntervalSeconds;
+    const HWND target = hwnd_;
+    std::thread([this, target]() {
+        auto* result = new LocalUsageSnapshot(localUsageReader_.Scan());
+        PostMessageW(target, kLocalUsageUpdatedMessage, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
+
+void AppBarWindow::OnLocalUsageUpdated(LocalUsageSnapshot* snapshot) {
+    std::unique_ptr<LocalUsageSnapshot> holder(snapshot);
+    localUsageRefreshInFlight_ = false;
+    if (snapshot != nullptr) {
+        localUsage_ = *snapshot;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void AppBarWindow::RequestLatestReleaseCheck(bool force) {
     bool expected = false;
     if (!force && !releaseCheckInFlight_.compare_exchange_strong(expected, true)) {
@@ -1514,6 +1559,21 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         }
         return metrics.widthIncludingTrailingWhitespace;
     };
+
+    if (taskbarMode_ && RectWidth(clientRect) >= ScaleForDpi(hwnd_, kTaskbarMinimumWidgetWidth)) {
+        fillRect(MakeRect(clientRect.left + 1, clientRect.top + 2, clientRect.right + 1, clientRect.bottom + 2), shadow);
+        fillRect(clientRect, background);
+        drawRectBorder(clientRect, border);
+        const std::wstring five = snapshot_.success && snapshot_.fiveHour.available ? FormatPercent(snapshot_.fiveHour.remainingPercent) : L"N/A";
+        const std::wstring week = snapshot_.success && snapshot_.weekly.available ? FormatPercent(snapshot_.weekly.remainingPercent) : L"N/A";
+        const std::wstring strip = L"5h " + five + L" | Week " + week + L" | "
+            + FormatScope(L"Task", localUsage_.task) + L" | " + FormatScope(L"Last", localUsage_.last)
+            + L" | " + FormatScope(L"Today", localUsage_.today) + L" | " + FormatScope(L"Till Now", localUsage_.tillNow);
+        const int pad = ScaleForDpi(hwnd_, 9);
+        drawTextBlock(textFormatFoot_.Get(), strip, MakeRect(clientRect.left + pad, clientRect.top, clientRect.right - pad, clientRect.bottom),
+            textPrimary, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+        return;
+    }
 
     if (taskbarMode_) {
         fillRect(MakeRect(clientRect.left + 1, clientRect.top + 2, clientRect.right + 1, clientRect.bottom + 2), shadow);

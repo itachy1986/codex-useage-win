@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CodexUsageFetcher.h"
+#include "LocalUsageReader.h"
 
 #include <Windows.h>
 #include <d2d1.h>
@@ -23,6 +24,7 @@ private:
     static constexpr UINT kReleaseVersionUpdatedMessage = WM_APP + 2;
     static constexpr UINT kResetCreditConsumedMessage = WM_APP + 3;
     static constexpr UINT kTokenRefreshedMessage = WM_APP + 4;
+    static constexpr UINT kLocalUsageUpdatedMessage = WM_APP + 5;
     static constexpr UINT_PTR kCountdownTimerId = 1;
     static constexpr UINT_PTR kRefreshTimerId = 2;
     static constexpr UINT_PTR kResetConfirmTimerId = 3;
@@ -71,6 +73,8 @@ private:
 
     void RequestRefresh(bool force);
     void OnUsageUpdated(UsageSnapshot* snapshot);
+    void RequestLocalUsageRefresh();
+    void OnLocalUsageUpdated(LocalUsageSnapshot* snapshot);
     void RequestLatestReleaseCheck(bool force);
     void OnLatestReleaseChecked(ReleaseVersionInfo* info);
     void OnResetCreditConsumed(ConsumeResetCreditResult* result);
@@ -117,6 +121,7 @@ private:
     std::atomic_bool releaseCheckInFlight_ = false;
     std::atomic_bool resetCreditInFlight_ = false;
     std::atomic_bool tokenRefreshInFlight_ = false;
+    std::atomic_bool localUsageRefreshInFlight_ = false;
     bool lightTheme_ = false;
     bool alwaysOnTop_ = false;
     bool lockPosition_ = false;
@@ -138,6 +143,7 @@ private:
     int refreshIntervalSeconds_ = 60;
     int refreshCountdownSeconds_ = 60;
     int releaseCheckCountdownSeconds_ = 6 * 60 * 60;
+    int localUsageRefreshCountdownSeconds_ = 0;
     std::wstring latestReleaseTag_;
     std::wstring releaseCheckErrorMessage_;
     std::wstring resetCreditActionMessage_;
@@ -145,7 +151,9 @@ private:
     RECT refreshButtonRect_ = {};
 
     UsageSnapshot snapshot_;
+    LocalUsageSnapshot localUsage_;
     CodexUsageFetcher fetcher_;
+    LocalUsageReader localUsageReader_;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
