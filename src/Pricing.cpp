@@ -54,9 +54,11 @@ CostEstimate EstimateApiEquivalentCost(const TokenUsage& usage, const std::wstri
 }
 
 CostEstimate EstimateApiEquivalentCost(const LocalUsageScope& scope) {
-    if (!scope.available || scope.byModel.empty()) return {};
+    if (!scope.available) return {};
     CostEstimate result;
-    result.available = false;
+    // A successful local scan with no usage or only unpriced models is still a meaningful
+    // lower bound: ≥$0.00, not an indistinguishable N/A data-source failure.
+    result.available = true;
     result.complete = true;
     for (const auto& [model, usage] : scope.byModel) {
         const CostEstimate part = EstimateApiEquivalentCost(usage, model);
@@ -64,7 +66,6 @@ CostEstimate EstimateApiEquivalentCost(const LocalUsageScope& scope) {
             result.complete = false;
             continue;
         }
-        result.available = true;
         result.usd += part.usd;
     }
     return result;

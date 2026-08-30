@@ -1,5 +1,6 @@
 #include "LocalUsageReader.h"
 #include "Pricing.h"
+#include "TaskbarPresentation.h"
 
 #include <filesystem>
 #include <fstream>
@@ -37,10 +38,22 @@ void WriteSession(const std::filesystem::path& root, const char* name, const std
     }
 }
 
+std::string ThreadSettingsEvent(const char* timestamp, const char* model) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"thread_settings_applied\",\"thread_settings\":{\"model\":\""
+        + model + "\"}}}\n";
+}
+
+std::string TurnContextEvent(const char* timestamp, const char* model) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"turn_context\",\"model\":\"" + model + "\"}}\n";
+}
+
 std::string TokenEvent(const char* timestamp, const char* model, int input, int cached, int cacheWrite,
     int output, int total, int lastTotal = -1) {
-    std::string event = "{\"timestamp\":\"" + std::string(timestamp) + "\",\"payload\":{\"type\":\"token_count\",\"model\":\"" + model
-        + "\",\"info\":{\"total_token_usage\":{\"input_tokens\":" + std::to_string(input)
+    std::string event = ThreadSettingsEvent(timestamp, model)
+        + "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"token_count\",\"info\":{\"request\":{\"model\":\"unrelated-nested-model\"},\"total_token_usage\":{\"input_tokens\":" + std::to_string(input)
         + ",\"cached_input_tokens\":" + std::to_string(cached)
         + ",\"cache_write_input_tokens\":" + std::to_string(cacheWrite)
         + ",\"output_tokens\":" + std::to_string(output)
@@ -80,7 +93,8 @@ void TestSafeDegradationAndPricing() {
     const LocalUsageSnapshot snapshot = LocalUsageReader(root, 0).ScanForLocalDate(2026, 8, 30);
     Expect(snapshot.filesWithParseErrors == 1, "Malformed JSONL degrades without aborting the scan");
     const CostEstimate unknown = EstimateApiEquivalentCost(snapshot.tillNow);
-    Expect(!unknown.complete && !unknown.available, "Unknown model is incomplete and never priced as zero");
+    Expect(!unknown.complete && unknown.available && unknown.usd == 0.0,
+        "Unknown model is an explicit incomplete zero lower bound, never a guessed price");
 
     TokenUsage usage;
     usage.inputTokens = 1000000;
@@ -122,6 +136,18 @@ void TestLocalDateAndMixedModelAttribution() {
     const CostEstimate mixedCost = EstimateApiEquivalentCost(mixed.task);
     Expect(mixedCost.complete && std::abs(mixedCost.usd - 0.0008) < 0.000001,
         "A mixed-model session prices each model delta independently");
+
+    const auto canonicalRoot = MakeFixtureRoot();
+    WriteSession(canonicalRoot, "current.jsonl",
+        TurnContextEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol")
+        + "{\"timestamp\":\"2026-08-30T10:00:00Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"tool\":{\"model\":\"unrelated-nested-model\"},\"total_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":100}}}}\n"
+        + ThreadSettingsEvent("2026-08-30T10:01:00Z", "gpt-5.6-terra")
+        + "{\"timestamp\":\"2026-08-30T10:02:00Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"tool\":{\"model\":\"still-unrelated\"},\"total_token_usage\":{\"input_tokens\":300,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":300}}}}\n");
+    const LocalUsageSnapshot canonical = LocalUsageReader(canonicalRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(canonical.task.byModel.count(L"gpt-5.6-sol") == 1
+            && canonical.task.byModel.count(L"gpt-5.6-terra") == 1
+            && canonical.task.byModel.count(L"unrelated-nested-model") == 0,
+        "Only TurnContext/thread-settings canonical model metadata can attribute token deltas");
 }
 
 void TestWeeklyCycleAndIncompleteLifetimeCost() {
@@ -140,6 +166,57 @@ void TestWeeklyCycleAndIncompleteLifetimeCost() {
     const CostEstimate lowerBound = EstimateApiEquivalentCost(mixed);
     Expect(lowerBound.available && !lowerBound.complete && std::abs(lowerBound.usd - 4.0) < 0.000001,
         "Partially unpriced lifetime usage exposes a priced lower bound");
+
+    LocalUsageScope zero;
+    zero.available = true;
+    zero.byModel[L"gpt-5.6-sol"] = {};
+    const CostEstimate zeroCost = EstimateApiEquivalentCost(zero);
+    Expect(zeroCost.available && zeroCost.complete && zeroCost.usd == 0.0,
+        "A valid weekly cycle with zero local usage is a complete $0.00 estimate");
+
+    const LocalUsageSnapshot emptyWeekly = LocalUsageReader(MakeFixtureRoot(), 0)
+        .ScanForLocalDate(2026, 8, 30, 1788084000);
+    const CostEstimate emptyWeeklyCost = EstimateApiEquivalentCost(emptyWeekly.weekly);
+    Expect(emptyWeekly.weekly.available && emptyWeekly.weekly.usage.totalTokens == 0
+            && emptyWeeklyCost.available && emptyWeeklyCost.complete && emptyWeeklyCost.usd == 0.0,
+        "A remote weekly boundary with no local events remains a complete zero weekly estimate");
+
+    LocalUsageScope allUnpriced;
+    allUnpriced.available = true;
+    allUnpriced.byModel[L"internal-unpriced-model"].inputTokens = 100;
+    const CostEstimate allUnpricedCost = EstimateApiEquivalentCost(allUnpriced);
+    Expect(allUnpricedCost.available && !allUnpricedCost.complete && allUnpricedCost.usd == 0.0,
+        "All-unpriced weekly usage remains an explicit incomplete zero lower bound");
+}
+
+void TestTaskbarPresentation() {
+    UsageSnapshot usage;
+    usage.success = true;
+    usage.fiveHour.available = true;
+    usage.fiveHour.remainingPercent = 42;
+    usage.weekly.available = true;
+    usage.weekly.remainingPercent = 73;
+    LocalUsageSnapshot local;
+    local.weekly.available = true;
+    local.weekly.byModel[L"gpt-5.6-sol"].inputTokens = 1000000;
+    local.tillNow = local.weekly;
+
+    const auto cards = BuildTaskbarMetricCards(usage, local);
+    Expect(cards.size() == 4 && cards[0].label == L"5H" && cards[1].label == L"周"
+            && cards[2].label == L"周消费" && cards[3].label == L"总消费",
+        "Taskbar presentation exposes exactly the optional 5H plus weekly and two cost cards");
+    bool hasSeparator = false;
+    for (const auto& card : cards) hasSeparator = hasSeparator || card.label.find(L'|') != std::wstring::npos || card.value.find(L'|') != std::wstring::npos;
+    Expect(!hasSeparator, "Taskbar card descriptors contain no legacy separators");
+
+    usage.fiveHour.available = false;
+    const auto withoutFiveHour = BuildTaskbarMetricCards(usage, local);
+    Expect(withoutFiveHour.size() == 3 && withoutFiveHour[0].label == L"周",
+        "Unavailable 5H removes the complete 5H taskbar card");
+    const int withFiveWidth = CalculateTaskbarCardRowWidth({30, 36, 72, 72}, 4, 10, 4);
+    const int withoutFiveWidth = CalculateTaskbarCardRowWidth({36, 72, 72}, 4, 10, 4);
+    Expect(withFiveWidth > withoutFiveWidth && withoutFiveWidth != 500 && withoutFiveWidth != 360,
+        "Taskbar width is content-driven and changes when visible cards change");
 }
 
 void TestFixturesAreRedacted() {
@@ -155,6 +232,7 @@ int main() {
     TestSafeDegradationAndPricing();
     TestLocalDateAndMixedModelAttribution();
     TestWeeklyCycleAndIncompleteLifetimeCost();
+    TestTaskbarPresentation();
     TestFixturesAreRedacted();
     return failures == 0 ? 0 : 1;
 }

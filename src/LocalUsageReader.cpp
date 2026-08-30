@@ -25,14 +25,40 @@ std::wstring Wide(const std::string_view text) {
     return output;
 }
 
-const jsonlite::Value* FindDescendant(const jsonlite::Value& value, std::string_view key) {
-    if (value.IsObject()) {
-        if (const auto* direct = value.Find(key)) return direct;
-        for (const auto& [_, child] : *value.AsObject()) if (const auto* found = FindDescendant(child, key)) return found;
-    } else if (value.IsArray()) {
-        for (const auto& child : *value.AsArray()) if (const auto* found = FindDescendant(child, key)) return found;
+const jsonlite::Value* PayloadFor(const jsonlite::Value& line) {
+    const auto* payload = line.Find("payload");
+    return payload != nullptr && payload->IsObject() ? payload : nullptr;
+}
+
+std::optional<std::string_view> EventType(const jsonlite::Value& line) {
+    const auto* type = PayloadFor(line) != nullptr ? PayloadFor(line)->Find("type") : nullptr;
+    return type != nullptr ? type->AsString() : std::nullopt;
+}
+
+std::optional<std::wstring> CanonicalModelFromMetadata(const jsonlite::Value& line) {
+    const auto type = EventType(line);
+    const auto* payload = PayloadFor(line);
+    if (!type || payload == nullptr) return std::nullopt;
+
+    // Codex rollout metadata owns model state. Do not recursively inspect
+    // arbitrary nested objects: tool payloads can also contain a "model" key.
+    const jsonlite::Value* model = nullptr;
+    if (*type == "turn_context") {
+        model = payload->Find("model");
+    } else if (*type == "thread_settings_applied") {
+        const auto* settings = payload->Find("thread_settings");
+        model = settings != nullptr ? settings->Find("model") : nullptr;
     }
-    return nullptr;
+    const auto value = model != nullptr ? model->AsString() : std::nullopt;
+    return value && !value->empty() ? std::optional<std::wstring>(Wide(*value)) : std::nullopt;
+}
+
+const jsonlite::Value* TokenUsageInfo(const jsonlite::Value& line) {
+    const auto type = EventType(line);
+    const auto* payload = PayloadFor(line);
+    if (!type || *type != "token_count" || payload == nullptr) return nullptr;
+    const auto* info = payload->Find("info");
+    return info != nullptr && info->IsObject() ? info : nullptr;
 }
 
 long long Number(const jsonlite::Value* node, std::string_view key) {
@@ -159,6 +185,9 @@ LocalUsageSnapshot LocalUsageReader::Scan(long long weeklyStartUnixSeconds) cons
 
 LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int day, long long weeklyStartUnixSeconds) const {
     LocalUsageSnapshot result;
+    // A remote weekly boundary makes an empty local history a valid, complete
+    // zero-usage interval rather than an unavailable estimate.
+    result.weekly.available = weeklyStartUnixSeconds > 0;
     std::vector<Session> sessions;
     const auto tree = codexHome_ / L"sessions";
     std::error_code error;
@@ -173,11 +202,12 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
         while (std::getline(file, line)) {
             jsonlite::Parser parser(line); const auto parsed = parser.Parse();
             if (!parsed) { malformed = true; continue; }
-            if (const auto* modelNode = FindDescendant(*parsed, "model")) if (const auto value = modelNode->AsString()) model = Wide(*value);
-            const auto total = UsageFrom(FindDescendant(*parsed, "total_token_usage"));
+            if (const auto canonicalModel = CanonicalModelFromMetadata(*parsed)) model = *canonicalModel;
+            const auto* info = TokenUsageInfo(*parsed);
+            const auto total = UsageFrom(info != nullptr ? info->Find("total_token_usage") : nullptr);
             if (!total) continue;
             Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.unixSeconds = ParseUnixSeconds(*parsed); event.model = model; event.total = *total;
-            event.last = UsageFrom(FindDescendant(*parsed, "last_token_usage"));
+            event.last = UsageFrom(info != nullptr ? info->Find("last_token_usage") : nullptr);
             session.events.push_back(std::move(event));
         }
         if (malformed) ++result.filesWithParseErrors;

@@ -98,6 +98,7 @@ private:
     void PaintContent(const RECT& clientRect);
     void ShowContextMenu(POINT screenPoint);
     int GetMinimumWidgetWidth() const;
+    int GetTaskbarPreferredWidth() const;
     int GetMinimumWidgetHeight(int width) const;
     void SetLanguage(Language language);
     void SetRefreshIntervalSeconds(int seconds);

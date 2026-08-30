@@ -35,6 +35,7 @@ add_executable(CodexUsageBar WIN32
     src/JsonLite.cpp
     src/LocalUsageReader.cpp
     src/Pricing.cpp
+    src/TaskbarPresentation.cpp
 )
 
 target_include_directories(CodexUsageBar PRIVATE src)
@@ -68,6 +69,7 @@ if(BUILD_TESTING)
         tests/LocalUsageTests.cpp
         src/LocalUsageReader.cpp
         src/Pricing.cpp
+        src/TaskbarPresentation.cpp
         src/JsonLite.cpp
     )
     target_include_directories(LocalUsageTests PRIVATE src)

@@ -20,6 +20,7 @@ cl /std:c++20 /utf-8 /EHsc /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN
   src\JsonLite.cpp ^
   src\LocalUsageReader.cpp ^
   src\Pricing.cpp ^
+  src\TaskbarPresentation.cpp ^
   /Fe:CodexUsageBar.exe ^
   /link advapi32.lib crypt32.lib ole32.lib shell32.lib shlwapi.lib winhttp.lib user32.lib gdi32.lib d2d1.lib dwrite.lib
 
