@@ -1,11 +1,15 @@
 # CodexUsageBar
 
-A native `Win32/C++` desktop widget for Windows that shows your Codex usage budget at a glance.
+A native `Win32/C++` Codex usage widget for Windows.
 
 [中文说明](README-zh.md)
 [![Linux.do Community](https://img.shields.io/badge/Linux.do-Community-2ea44f?style=flat-square)](https://linux.do/)
 
-## Project Status
+> This repository is a fork of [`luodaoyi/codex-useage-win`](https://github.com/luodaoyi/codex-useage-win). This fork keeps the upstream quota widget and adds **local Codex Desktop token accounting, API-equivalent cost estimates, and card-based Standard / Simple / Taskbar modes**. Upstream attribution and history are preserved.
+
+## Upstream Project Status
+
+The badges and Release links below refer to upstream:
 
 [![Build](https://github.com/luodaoyi/codex-useage-win/actions/workflows/build.yml/badge.svg)](https://github.com/luodaoyi/codex-useage-win/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/luodaoyi/codex-useage-win?display_name=tag)](https://github.com/luodaoyi/codex-useage-win/releases/latest)
@@ -13,61 +17,109 @@ A native `Win32/C++` desktop widget for Windows that shows your Codex usage budg
 [![Total Downloads](https://img.shields.io/github/downloads/luodaoyi/codex-useage-win/total)](https://github.com/luodaoyi/codex-useage-win/releases)
 [![Stars](https://img.shields.io/github/stars/luodaoyi/codex-useage-win?style=flat)](https://github.com/luodaoyi/codex-useage-win/stargazers)
 
-The widget reads usage limits from the current Codex account and displays them in a draggable, resizable desktop panel. It helps you monitor:
+## What This Fork Shows
 
-- `5-hour quota` used and remaining
-- `Weekly quota` used and remaining
-- `Expected usage` for the current point in the cycle
-- `Actual usage`
-- `Ahead of pace` or `behind pace`
-- `Time until reset`
-- `Last successful refresh`
-- `Time until the next automatic refresh`
+CodexUsageBar reads the current Codex account quota and local Codex Desktop **usage metadata**, so one widget can show quota, tokens, and API-equivalent value.
 
-## Screenshots
+### Remote quota
+
+- `5H` remaining quota, only when the backend actually exposes a five-hour lane
+- `Week` remaining percentage for the current weekly quota cycle
+- The upstream reset time / pace / reset-credit controls remain available in Standard mode
+
+### Local tokens and API-equivalent cost
+
+Local accounting uses Codex-reported usage metadata; it does not estimate tokens from prompt/output text length.
+
+- `Task`: cumulative tokens + API-equivalent cost for the current/latest local Codex task
+- `Last`: most recent available turn usage for the current task
+- `Today`: tokens + API-equivalent cost for the current **Windows local calendar day**
+- `Weekly spend`: API-equivalent cost from the remote weekly quota-cycle start through now, not Monday-Sunday
+- `Lifetime spend`: cumulative discoverable local Codex session history and API-equivalent cost
+
+API-equivalent cost is calculated by model and token category using supported public pricing for uncached input, cached input, cache-write input, and output where applicable. It answers “roughly what would the same token usage cost at API list prices?” and is **not your ChatGPT / Codex subscription bill**.
+
+Display semantics:
+
+- `≈$X.XX`: the scope is fully priceable with the currently supported pricing table
+- `≥$X.XX`: at least this much is known; some usage in the scope cannot be priced reliably and is not silently treated as `$0`
+
+## Screenshots / Layouts
 
 ### Standard Mode
+
+Keeps account, plan, weekly quota, reset credits, and refresh controls, and adds a separate local-usage section for `Task` / `Last` / `Today` / weekly spend / lifetime spend.
 
 ![CodexUsageBar standard mode](IMG/3.png)
 
 ### Simple Mode
 
-![CodexUsageBar simple mode](IMG/4.png)
+A compact movable summary with only the highest-value cards: optional `5H`, `Week`, weekly spend, and lifetime spend.
+
+Current accepted layout example:
+
+```text
+┌──────────┐  ┌────────────────┐
+│   Week   │  │  Weekly spend  │
+│   82%    │  │    ≥$28.80     │
+└──────────┘  └────────────────┘
+┌──────────────────────────────┐
+│        Lifetime spend        │
+│           ≥$209.75           │
+└──────────────────────────────┘
+```
+
+### Taskbar Mode
+
+Docked to the current monitor's taskbar edge, with content-driven width and independent rounded cards. The complete 5H card disappears when the backend does not expose that lane.
+
+Current accepted layout example:
+
+```text
+[ Week 82% ]  [ Weekly spend ≥$28.80 ]  [ Lifetime spend ≥$209.75 ]
+```
 
 ## Features
 
 - Native `Win32 + Direct2D + DirectWrite + WinHTTP`
-- No `C#`, no `WebView`
+- No `C#`, no `WebView`, no Electron
 - Reads `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
+- Reads local usage metadata under `%USERPROFILE%\.codex\sessions` / `%CODEX_HOME%\sessions`
 - Three display modes:
-  - Standard mode: hero status, four metrics, weekly pace bar, budget marker, footer details, refresh time, and countdown
-  - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
-  - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
-- Desktop overlay widget with drag and resize support
-- Dynamic coloring based on current pace
-- Launch at startup toggle
-- Always-on-top toggle
-- Lock-position toggle
-- Display mode switch for full, simple, and taskbar layouts
-- UI language switch between English and Chinese
+  - **Standard:** account / plan / quota / reset-credit controls plus Task / Last / Today / weekly spend / lifetime spend
+  - **Simple:** optional 5H + Week + weekly spend + lifetime spend in a materially smaller movable widget
+  - **Taskbar:** the same high-value summary as a tightly wrapped docked card row
+- Cumulative session snapshots are deduplicated instead of being summed repeatedly
+- Model attribution uses recognized canonical Codex rollout metadata rather than arbitrary nested `model` fields
+- Light / Dark theme support and Windows DPI scaling
+- Desktop overlay with drag and resize support (Taskbar mode remains docked)
+- Launch-at-startup, Always on top, and Lock position toggles
+- English / Chinese UI switch
+
+## Privacy and Security
+
+- `auth.json`, `access_token`, `refresh_token`, and `id_token` are not written into README files, test fixtures, or ordinary logs
+- The local session parser extracts only the structures needed for usage/model accounting; prompts, assistant content, code/tool content are not displayed, logged, or uploaded by this feature
+- Automated tests use synthetic / redacted fixtures rather than real Codex sessions or credentials
+- API-equivalent cost is computed locally from usage statistics and does not require another API key
 
 ## Refresh Behavior
 
-- Remote usage API refresh: every `60` seconds
-- Local countdown repaint: every `1` second
-- Bottom-right area shows:
-  - last successful refresh time
-  - countdown to the next automatic refresh
-- Right-click menu `Refresh now`: force refresh immediately
+- Remote quota API: default refresh every `60` seconds
+- Local token / API-equivalent statistics: background rescan about every `5` minutes, with an immediate initial scan at app startup
+- Local countdown / UI repaint: every `1` second
+- Right-click `Refresh now`: refreshes remote quota immediately
+- OAuth: current code supports proactive refresh near expiry, recovery refresh after 401 / 403, and a manual `Refresh Token` menu action
 
 ## Usage
 
 - Drag the widget body to move it
 - Drag the right edge, bottom edge, or bottom-right corner to resize it
 - Taskbar mode stays docked and does not support dragging or resizing
-- Right-click menu:
+- Right-click menu includes:
   - `Refresh now`
+  - `Refresh Token`
   - `Launch at startup`
   - `Always on top`
   - `Lock position`
@@ -80,7 +132,7 @@ Position and size are stored in:
 
 - `%APPDATA%\CodexUsageBar\settings.ini`
 
-Startup registration uses the current user registry key:
+Startup registration uses the current-user registry key:
 
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 
@@ -103,46 +155,28 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+The project also includes CTest coverage for local token accounting, pricing, and presentation behavior.
+
 ## GitHub Actions
 
-The repository includes automated build and release workflows.
+The workflow supports:
 
-### Build Workflow
+- `x64` / `ARM64` builds
+- `pull_request`
+- push to `main` / `master`
+- `workflow_dispatch`
+- `v*` tags triggering a public GitHub Release
 
-- Platforms:
-  - `x64`
-  - `ARM64`
-- Triggers:
-  - push to `main` / `master`
-  - `pull_request`
-  - `workflow_dispatch`
-
-### Release Workflow
-
-- Trigger:
-  - push a version tag such as `v0.1.0`
-- Behavior:
-  - build `x64` and `ARM64`
-  - create a GitHub Release automatically
-  - upload:
-    - `CodexUsageBar-x64.exe`
-    - `CodexUsageBar-ARM64.exe`
-
-## Release Flow
-
-```bash
-git tag v0.1.0
-git push origin master
-git push origin v0.1.0
-```
-
-If the default branch is `main`, replace `master` with `main`.
+> Important: a `v*` tag triggers a public Release. This fork currently has no public Release. Verify upstream licensing/authorization and the current release decision before tagging or redistributing binaries.
 
 ## Known Limitations
 
-- It currently relies on the existing `access_token` in `auth.json`; automatic refresh via `refresh_token` is not implemented
-- If the OpenAI backend response changes, the parser must be updated accordingly
+- `chatgpt.com/backend-api/wham/usage` and its fields are not a stable public contract controlled by this project; backend changes may require parser updates
+- Local accounting depends on the Codex session JSONL / rollout schema and may require adaptation if Codex changes that schema
+- API-equivalent cost depends on the maintained pricing coverage; historical, third-party, or internal models can produce a `≥$...` lower-bound estimate
+- Lifetime totals include only currently discoverable/readable local session history and are not an OpenAI account-side billing history
 - This is a desktop overlay widget, not the legacy Windows Gadget platform
+- Upstream currently does not declare an explicit LICENSE; verify authorization / licensing requirements before publicly redistributing fork binaries
 
 ## Star History
 

@@ -5,7 +5,11 @@
 [English README](README.md)
 [![Linux.do 社区](https://img.shields.io/badge/Linux.do-%E7%A4%BE%E5%8C%BA-2ea44f?style=flat-square)](https://linux.do/)
 
-## 项目看板
+> 本仓库是 [`luodaoyi/codex-useage-win`](https://github.com/luodaoyi/codex-useage-win) 的 Fork。当前 Fork 在上游限额面板基础上增加了 **Codex Desktop 本地 Token 统计、API 等价成本估算，以及 Standard / Simple / Taskbar 三种卡片式显示模式**。上游来源与提交历史保持可追溯。
+
+## 上游项目看板
+
+以下徽章和 Release 链接指向 upstream：
 
 [![Build](https://github.com/luodaoyi/codex-useage-win/actions/workflows/build.yml/badge.svg)](https://github.com/luodaoyi/codex-useage-win/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/luodaoyi/codex-useage-win?display_name=tag)](https://github.com/luodaoyi/codex-useage-win/releases/latest)
@@ -13,61 +17,109 @@
 [![Total Downloads](https://img.shields.io/github/downloads/luodaoyi/codex-useage-win/total)](https://github.com/luodaoyi/codex-useage-win/releases)
 [![Stars](https://img.shields.io/github/stars/luodaoyi/codex-useage-win?style=flat)](https://github.com/luodaoyi/codex-useage-win/stargazers)
 
-它会读取当前 Codex 账号的限额信息，在桌面上显示一个可拖动、可缩放的固定布局面板，用来观察：
+## 当前能力
 
-- `5 小时限额` 已用/剩余
-- `每周限额` 已用/剩余
-- `当前周期理论应使用多少`
-- `实际已经使用多少`
-- `当前高于/低于平均进度`
-- `距离重置还剩多久`
-- `上次成功刷新时间`
-- `距离下一次自动刷新还剩多久`
+CodexUsageBar 会读取当前 Codex 账号的限额信息，并读取本机 Codex Desktop 会话目录中的 **usage metadata**，用于同时观察额度、Token 和 API 等价成本。
+
+### 远程额度
+
+- `5H` 剩余额度：仅在后端实际提供 5 小时窗口时显示
+- `周` 剩余额度：显示当前 weekly quota 的剩余百分比
+- 周期重置时间、额度进度、重置卡等上游已有能力仍保留在 Standard 模式
+
+### 本地 Token / API 等价成本
+
+本地统计来自已解析的 Codex session usage metadata，不按聊天文本长度猜 Token。
+
+- `Task`：当前 / 最新本地 Codex Task 的累计 Token + API 等价成本
+- `Last`：当前 Task 最近一次可用的 turn usage
+- `Today`：按 **Windows 本地自然日**统计的 Token + API 等价成本
+- `周消费`：从远端 weekly quota 周期起点到现在的 API 等价成本，不是自然周
+- `总消费`：当前可发现本地 Codex session 历史的累计 Token / API 等价成本
+
+API 等价成本按模型及 Token 类别计算，包括可验证的 uncached input、cached input、cache-write input 和 output；它是“如果同样用量按 API 公开价格计费，大约值多少钱”的比较指标，**不是 ChatGPT / Codex 订阅账单**。
+
+显示语义：
+
+- `≈$X.XX`：该统计范围内的用量可以完整按当前已支持价格计算
+- `≥$X.XX`：至少可以确认这么多；统计范围中还存在无法可靠定价的模型 / 用量，未知部分不会被偷偷按 `$0` 计算
 
 ## 示例
 
-### 标准模式
+### Standard / 完整模式
+
+保留账号、套餐、周额度、重置卡和刷新控制，并增加独立“本地用量”区域：`Task` / `Last` / `Today` / `周消费` / `总消费`。
 
 ![CodexUsageBar 标准模式](IMG/1.png)
 
-### 简单模式
+### Simple / 简单模式
 
-![CodexUsageBar 简单模式](IMG/2.png)
+紧凑的可移动卡片，只保留最高价值信息：可选 `5H`、`周`、`周消费`、`总消费`。
+
+当前布局示意：
+
+```text
+┌──────────┐  ┌──────────────┐
+│    周    │  │    周消费    │
+│   82%    │  │   ≥$28.80    │
+└──────────┘  └──────────────┘
+┌────────────────────────────┐
+│           总消费           │
+│          ≥$209.75          │
+└────────────────────────────┘
+```
+
+### Taskbar / 任务栏模式
+
+固定贴近当前显示器任务栏边缘，采用内容驱动宽度的独立圆角小卡片；没有 5H 数据时会整张隐藏 5H 卡片。
+
+当前布局示意：
+
+```text
+[ 周 82% ]  [ 周消费 ≥$28.80 ]  [ 总消费 ≥$209.75 ]
+```
 
 ## 功能
 
 - 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
-- 无 `C#`、无 `WebView`
+- 无 `C#`、无 `WebView`、无 Electron
 - 读取 `%USERPROFILE%\.codex\auth.json` 或 `%CODEX_HOME%\auth.json`
 - 请求 `GET https://chatgpt.com/backend-api/wham/usage`
+- 读取 `%USERPROFILE%\.codex\sessions` / `%CODEX_HOME%\sessions` 下的本地 usage metadata
 - 三种显示模式：
-  - 标准模式：顶部状态标题、四项指标、周进度条、预算标记线、底部明细、刷新时间与倒计时
-  - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
-  - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
-- 桌面浮层挂件，可拖动、可缩放
-- 根据当前进度状态切换颜色
-- 支持开机自启开关
-- 支持 `Always on top` 置顶开关
-- 支持 `Lock position` 固定位置开关
-- 支持 `完整模式` / `简单模式` / `任务栏模式` 显示模式切换
+  - **Standard / 完整模式**：账号 / 套餐 / 额度 / 重置卡 + Task / Last / Today / 周消费 / 总消费
+  - **Simple / 简单模式**：可选 5H + 周 + 周消费 + 总消费，保持明显比 Standard 更小
+  - **Taskbar / 任务栏模式**：同类高价值指标的紧凑横向卡片，自动贴近任务栏并按内容自适应宽度
+- 本地会话统计按累计 snapshot 做去重，避免重复累计同一 session 的 cumulative token count
+- 模型归因只使用已识别的 Codex canonical rollout metadata，不使用任意嵌套 `model` 字段猜测
+- 支持 Light / Dark theme 和 Windows DPI 缩放
+- 桌面浮层挂件，可拖动、可缩放（Taskbar 模式固定贴边）
+- 支持开机自启、Always on top、Lock position
 - 支持中英文界面切换
+
+## 隐私与安全
+
+- `auth.json`、`access_token`、`refresh_token`、`id_token` 不会进入 README、测试 fixture 或普通日志
+- 本地 session 解析器只提取 usage / model 等统计所需结构；不展示、记录或上传 prompt、assistant 内容、代码 / tool 内容
+- 自动测试使用 synthetic / redacted fixture，不复制真实 Codex session 或真实账号凭据
+- API 等价成本只在本机统计结果上计算，不需要额外 API Key
 
 ## 刷新策略
 
-- 远程用量接口：每 `60` 秒刷新一次
-- 本地倒计时：每 `1` 秒重绘一次
-- 右下角显示：
-  - 上次成功刷新时间
-  - 距离下一次自动刷新的倒计时
-- 右键 `立即刷新`：立即强制刷新
+- 远程额度接口：默认每 `60` 秒刷新一次
+- 本地 Token / API 等价统计：后台约每 `5` 分钟重新扫描一次；程序启动时会立即进行首次扫描
+- 本地倒计时 / UI：每 `1` 秒重绘一次
+- 右键 `立即刷新`：立即刷新远程额度
+- OAuth Token：当前实现支持接近过期时自动 refresh，并支持 401 / 403 后的恢复刷新；右键菜单也提供手动 `Refresh Token`
 
 ## 使用方式
 
 - 拖动挂件主体：移动位置
 - 拖右边、下边、右下角：调整大小
 - 任务栏模式固定贴边显示，不支持拖动或缩放
-- 右键菜单：
+- 右键菜单包含：
   - `立即刷新`
+  - `Refresh Token`
   - `开机自启`
   - `始终置顶`
   - `固定位置`
@@ -76,7 +128,7 @@
   - `重置组件位置`
   - `退出`
 
-位置和尺寸会保存到：
+位置和尺寸保存到：
 
 - `%APPDATA%\CodexUsageBar\settings.ini`
 
@@ -103,46 +155,28 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+项目同时包含针对本地 Token accounting / pricing / presentation 的 CTest 测试。
+
 ## GitHub Actions
 
-仓库包含自动构建和自动发布工作流。
+仓库 workflow 支持：
 
-### 自动构建
+- `x64` / `ARM64` 构建
+- `pull_request`
+- push 到 `main` / `master`
+- `workflow_dispatch`
+- `v*` Tag 触发公开 GitHub Release
 
-- 平台：
-  - `x64`
-  - `ARM64`
-- 触发方式：
-  - 推送到 `main` / `master`
-  - `pull_request`
-  - `workflow_dispatch`
-
-### 自动发布 Release
-
-- 触发方式：
-  - 推送版本标签，例如 `v0.1.0`
-- 行为：
-  - 自动构建 `x64` 和 `ARM64`
-  - 自动创建 GitHub Release
-  - 自动上传：
-    - `CodexUsageBar-x64.exe`
-    - `CodexUsageBar-ARM64.exe`
-
-## 发布流程
-
-```bash
-git tag v0.1.0
-git push origin master
-git push origin v0.1.0
-```
-
-如果默认分支改成了 `main`，把上面的 `master` 换成 `main` 即可。
+> 注意：`v*` Tag 会触发公开 Release。当前 Fork 尚未发布公开 Release；在创建版本 Tag / 对外分发二进制前，应先确认上游许可 / 授权和当前发布决策。
 
 ## 已知限制
 
-- 当前只使用 `auth.json` 中现有的 `access_token`，还没做 `refresh_token` 自动续期
-- 如果 OpenAI 后端接口字段变化，需要同步调整解析逻辑
+- `chatgpt.com/backend-api/wham/usage` 及其字段不是本项目控制的稳定公开 contract；后端字段变化时可能需要更新解析
+- 本地统计依赖 Codex session JSONL / rollout schema；未来 Codex schema 变化时可能需要适配
+- API 等价成本依赖当前已维护的模型价格覆盖；历史或第三方 / 内部模型可能只能显示 `≥$...` 下界
+- `总消费` 仅覆盖当前可读取、可发现的本地 session 历史，不等于 OpenAI 账户侧完整历史账单
 - 当前是桌面浮层挂件，不是 Windows 7 时代的官方 Gadget 平台
+- upstream 当前未声明明确 LICENSE；对外再分发本 Fork 二进制前请先核验授权 / 许可证要求
 
 ## Star History
 
