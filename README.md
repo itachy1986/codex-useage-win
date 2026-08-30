@@ -69,8 +69,6 @@ Current accepted layout example:
 └──────────────────────────────┘
 ```
 
-> The Owner supplied current Simple and Taskbar screenshots. The current GitHub connector cannot commit binary PNG data directly from chat attachments, so the repository image files have not been replaced in this docs change.
-
 ### Taskbar Mode
 
 Docked to the current monitor's taskbar edge, with content-driven width and independent rounded cards. The complete 5H card disappears when the backend does not expose that lane.
