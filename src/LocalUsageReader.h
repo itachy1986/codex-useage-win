@@ -3,6 +3,7 @@
 #include "Pricing.h"
 
 #include <filesystem>
+#include <optional>
 
 struct LocalUsageSnapshot {
     LocalUsageScope task;
@@ -15,10 +16,11 @@ struct LocalUsageSnapshot {
 
 class LocalUsageReader {
 public:
-    explicit LocalUsageReader(std::filesystem::path codexHome = {});
+    explicit LocalUsageReader(std::filesystem::path codexHome = {}, std::optional<int> localUtcOffsetMinutesForTesting = std::nullopt);
     LocalUsageSnapshot Scan() const;
     LocalUsageSnapshot ScanForLocalDate(int year, int month, int day) const;
 
 private:
     std::filesystem::path codexHome_;
+    std::optional<int> localUtcOffsetMinutesForTesting_;
 };

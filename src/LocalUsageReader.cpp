@@ -55,15 +55,41 @@ std::optional<TokenUsage> UsageFrom(const jsonlite::Value* node) {
     return usage;
 }
 
-Date ParseDate(const jsonlite::Value& line) {
+Date ParseDate(const jsonlite::Value& line, std::optional<int> localUtcOffsetMinutesForTesting) {
     const auto* stamp = line.Find("timestamp");
     const auto text = stamp ? stamp->AsString() : std::nullopt;
     Date date;
-    if (!text || text->size() < 10) return date;
+    if (!text || text->size() < 19) return date;
     try {
-        date.year = std::stoi(std::string(text->substr(0, 4)));
-        date.month = std::stoi(std::string(text->substr(5, 2)));
-        date.day = std::stoi(std::string(text->substr(8, 2)));
+        SYSTEMTIME parsed{};
+        parsed.wYear = static_cast<WORD>(std::stoi(std::string(text->substr(0, 4))));
+        parsed.wMonth = static_cast<WORD>(std::stoi(std::string(text->substr(5, 2))));
+        parsed.wDay = static_cast<WORD>(std::stoi(std::string(text->substr(8, 2))));
+        parsed.wHour = static_cast<WORD>(std::stoi(std::string(text->substr(11, 2))));
+        parsed.wMinute = static_cast<WORD>(std::stoi(std::string(text->substr(14, 2))));
+        parsed.wSecond = static_cast<WORD>(std::stoi(std::string(text->substr(17, 2))));
+        size_t timezone = text->find_first_of("Zz+-", 19);
+        int offsetMinutes = 0;
+        if (timezone != std::string_view::npos && (*text)[timezone] != 'Z' && (*text)[timezone] != 'z') {
+            const int sign = (*text)[timezone] == '+' ? 1 : -1;
+            offsetMinutes = sign * (std::stoi(std::string(text->substr(timezone + 1, 2))) * 60
+                + std::stoi(std::string(text->substr(timezone + 4, 2))));
+        }
+        FILETIME raw{};
+        if (!SystemTimeToFileTime(&parsed, &raw)) return date;
+        ULARGE_INTEGER value{}; value.LowPart = raw.dwLowDateTime; value.HighPart = raw.dwHighDateTime;
+        value.QuadPart -= static_cast<LONGLONG>(offsetMinutes) * 60LL * 10000000LL;
+        FILETIME utc{}; utc.dwLowDateTime = value.LowPart; utc.dwHighDateTime = value.HighPart;
+        SYSTEMTIME utcTime{}; SYSTEMTIME local{};
+        if (!FileTimeToSystemTime(&utc, &utcTime)) return date;
+        if (localUtcOffsetMinutesForTesting.has_value()) {
+            value.QuadPart += static_cast<LONGLONG>(*localUtcOffsetMinutesForTesting) * 60LL * 10000000LL;
+            FILETIME forced{}; forced.dwLowDateTime = value.LowPart; forced.dwHighDateTime = value.HighPart;
+            if (!FileTimeToSystemTime(&forced, &local)) return date;
+        } else if (!SystemTimeToTzSpecificLocalTime(nullptr, &utcTime, &local)) {
+            return date;
+        }
+        date.year = local.wYear; date.month = local.wMonth; date.day = local.wDay;
     } catch (...) {}
     return date;
 }
@@ -97,7 +123,8 @@ std::filesystem::path ResolveHome(std::filesystem::path home) {
 
 }  // namespace
 
-LocalUsageReader::LocalUsageReader(std::filesystem::path codexHome) : codexHome_(ResolveHome(std::move(codexHome))) {}
+LocalUsageReader::LocalUsageReader(std::filesystem::path codexHome, std::optional<int> localUtcOffsetMinutesForTesting)
+    : codexHome_(ResolveHome(std::move(codexHome))), localUtcOffsetMinutesForTesting_(localUtcOffsetMinutesForTesting) {}
 
 LocalUsageSnapshot LocalUsageReader::Scan() const {
     SYSTEMTIME now{}; GetLocalTime(&now);
@@ -123,7 +150,7 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
             if (const auto* modelNode = FindDescendant(*parsed, "model")) if (const auto value = modelNode->AsString()) model = Wide(*value);
             const auto total = UsageFrom(FindDescendant(*parsed, "total_token_usage"));
             if (!total) continue;
-            Event event; event.date = ParseDate(*parsed); event.model = model; event.total = *total;
+            Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.model = model; event.total = *total;
             event.last = UsageFrom(FindDescendant(*parsed, "last_token_usage"));
             session.events.push_back(std::move(event));
         }
@@ -134,19 +161,25 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
     std::sort(sessions.begin(), sessions.end(), [](const Session& a, const Session& b) { return a.modified < b.modified; });
     const Date today{year, month, day};
     for (const auto& session : sessions) {
-        const Event& latest = session.events.back(); AddToScope(&result.tillNow, latest.total, latest.model);
+        LocalUsageScope sessionTotal;
         TokenUsage previous{}; bool havePrevious = false;
         for (const auto& event : session.events) {
             if (event.last && &session == &sessions.back()) { result.last = {}; AddToScope(&result.last, *event.last, event.model); }
             if (!havePrevious) {
+                AddToScope(&sessionTotal, event.total, event.model);
                 if (SameDate(event.date, today)) AddToScope(&result.today, event.total, event.model);
                 previous = event.total; havePrevious = true; continue;
             }
             if (!IsAtLeast(event.total, previous)) { previous = event.total; continue; }
-            if (SameDate(event.date, today)) AddToScope(&result.today, Difference(event.total, previous), event.model);
+            const TokenUsage delta = Difference(event.total, previous);
+            AddToScope(&sessionTotal, delta, event.model);
+            if (SameDate(event.date, today)) AddToScope(&result.today, delta, event.model);
             previous = event.total;
         }
+        result.tillNow.available = true;
+        Add(&result.tillNow.usage, sessionTotal.usage);
+        for (const auto& [model, usage] : sessionTotal.byModel) Add(&result.tillNow.byModel[model], usage);
+        if (&session == &sessions.back()) result.task = sessionTotal;
     }
-    const Session& current = sessions.back(); const Event& latest = current.events.back(); AddToScope(&result.task, latest.total, latest.model);
     return result;
 }

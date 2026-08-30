@@ -60,7 +60,7 @@ void TestAccounting() {
         TokenEvent("2026-08-30T11:00:00", "gpt-5.6-sol", 1000, 200, 100, 300, 1300, 15)
         + TokenEvent("2026-08-30T11:02:00", "gpt-5.6-sol", 1000, 200, 100, 300, 1300, 15));
 
-    LocalUsageReader reader(root);
+    LocalUsageReader reader(root, 0);
     const LocalUsageSnapshot snapshot = reader.ScanForLocalDate(2026, 8, 30);
     Expect(snapshot.task.available && snapshot.task.usage.totalTokens == 1300,
         "Task uses the newest cumulative snapshot without double counting");
@@ -77,7 +77,7 @@ void TestAccounting() {
 void TestSafeDegradationAndPricing() {
     const auto root = MakeFixtureRoot();
     WriteSession(root, "broken.jsonl", "{not-json}\n" + TokenEvent("2026-08-30T10:00:00", "unknown-model", 100, 0, 0, 10, 110));
-    const LocalUsageSnapshot snapshot = LocalUsageReader(root).ScanForLocalDate(2026, 8, 30);
+    const LocalUsageSnapshot snapshot = LocalUsageReader(root, 0).ScanForLocalDate(2026, 8, 30);
     Expect(snapshot.filesWithParseErrors == 1, "Malformed JSONL degrades without aborting the scan");
     const CostEstimate unknown = EstimateApiEquivalentCost(snapshot.tillNow);
     Expect(!unknown.complete && !unknown.available, "Unknown model is incomplete and never priced as zero");
@@ -93,6 +93,29 @@ void TestSafeDegradationAndPricing() {
         "Model pricing separates uncached, cached, cache-write, and output tokens");
     Expect(std::wstring(PricingVersion()).find(L"2026-08-30") != std::wstring::npos,
         "Pricing table carries an explicit effective date");
+    const CostEstimate unverifiedCacheWrite = EstimateApiEquivalentCost(usage, L"gpt-5.6-terra");
+    Expect(!unverifiedCacheWrite.available && !unverifiedCacheWrite.complete,
+        "Unverified model cache-write pricing is incomplete rather than estimated");
+}
+
+void TestLocalDateAndMixedModelAttribution() {
+    const auto dateRoot = MakeFixtureRoot();
+    WriteSession(dateRoot, "current.jsonl", TokenEvent("2026-08-29T18:00:00-05:00", "gpt-5.6-sol", 100, 0, 0, 0, 100));
+    const LocalUsageSnapshot localDate = LocalUsageReader(dateRoot, 480).ScanForLocalDate(2026, 8, 30);
+    Expect(localDate.today.available && localDate.today.usage.totalTokens == 100,
+        "Offset timestamps are assigned to the Windows-local calendar date");
+
+    const auto modelRoot = MakeFixtureRoot();
+    WriteSession(modelRoot, "current.jsonl",
+        TokenEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol", 100, 0, 0, 0, 100)
+        + TokenEvent("2026-08-30T10:02:00Z", "gpt-5.6-terra", 300, 0, 0, 0, 300));
+    const LocalUsageSnapshot mixed = LocalUsageReader(modelRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(mixed.task.byModel.at(L"gpt-5.6-sol").totalTokens == 100
+            && mixed.task.byModel.at(L"gpt-5.6-terra").totalTokens == 200,
+        "A mixed-model session attributes cumulative deltas to the active model");
+    const CostEstimate mixedCost = EstimateApiEquivalentCost(mixed.task);
+    Expect(mixedCost.complete && std::abs(mixedCost.usd - 0.0008) < 0.000001,
+        "A mixed-model session prices each model delta independently");
 }
 
 void TestFixturesAreRedacted() {
@@ -106,6 +129,7 @@ void TestFixturesAreRedacted() {
 int main() {
     TestAccounting();
     TestSafeDegradationAndPricing();
+    TestLocalDateAndMixedModelAttribution();
     TestFixturesAreRedacted();
     return failures == 0 ? 0 : 1;
 }
