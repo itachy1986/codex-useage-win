@@ -89,7 +89,7 @@ void TestSafeDegradationAndPricing() {
     usage.outputTokens = 500000;
     usage.totalTokens = 1500000;
     const CostEstimate sol = EstimateApiEquivalentCost(usage, L"gpt-5.6-sol");
-    Expect(sol.available && sol.complete && std::abs(sol.usd - 10.5828) < 0.001,
+    Expect(sol.available && sol.complete && std::abs(sol.usd - 13.38) < 0.001,
         "Model pricing separates uncached, cached, cache-write, and output tokens");
     Expect(std::wstring(PricingVersion()).find(L"2026-08-30") != std::wstring::npos,
         "Pricing table carries an explicit effective date");
