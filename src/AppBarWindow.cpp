@@ -1162,7 +1162,7 @@ void AppBarWindow::RequestLocalUsageRefresh() {
         return;
     }
     localUsageRefreshCountdownSeconds_ = kLocalUsageRefreshIntervalSeconds;
-    const long long weeklyStart = snapshot_.weekly.hasStart ? snapshot_.weekly.startAtUnixSeconds : 0;
+    const long long weeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
     localUsageWeeklyStartUnixSeconds_ = weeklyStart;
     const HWND target = hwnd_;
     std::thread([this, target, weeklyStart]() {
@@ -1177,7 +1177,7 @@ void AppBarWindow::OnLocalUsageUpdated(LocalUsageSnapshot* snapshot) {
     if (snapshot != nullptr) {
         localUsage_ = *snapshot;
     }
-    const long long currentWeeklyStart = snapshot_.weekly.hasStart ? snapshot_.weekly.startAtUnixSeconds : 0;
+    const long long currentWeeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
     if (currentWeeklyStart != localUsageWeeklyStartUnixSeconds_) {
         RequestLocalUsageRefresh();
     }
