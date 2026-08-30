@@ -1,5 +1,6 @@
 #include "AppBarWindow.h"
 #include "AppVersion.h"
+#include "TaskbarPresentation.h"
 
 #include <ShlObj.h>
 #include <winreg.h>
@@ -21,7 +22,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"CodexUsageBarWindow";
 constexpr const wchar_t* kCurrentVersion = APP_VERSION_W;
 // Bumped when default geometry / full-mode layout changes.
-constexpr int kLayoutVersion = 9;
+constexpr int kLayoutVersion = 10;
 constexpr UINT kCommandRefresh = 1;
 constexpr UINT kCommandExit = 2;
 constexpr UINT kCommandResetPosition = 3;
@@ -44,8 +45,6 @@ constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 360;
 constexpr int kSimpleDefaultWidgetWidth = 240;
 constexpr int kSimpleMinimumWidgetWidth = 220;
-constexpr int kTaskbarDefaultWidgetWidth = 184;
-constexpr int kTaskbarMinimumWidgetWidth = 160;
 constexpr int kTaskbarWidgetHeight = 46;
 constexpr int kDesktopMargin = 18;
 constexpr int kHorizontalPadding = 14;
@@ -54,6 +53,7 @@ constexpr int kResizeGrip = 12;
 constexpr long long kDaySeconds = 24LL * 60 * 60;
 constexpr long long kWeekSeconds = 7LL * kDaySeconds;
 constexpr int kReleaseCheckIntervalSeconds = 6 * 60 * 60;
+constexpr int kLocalUsageRefreshIntervalSeconds = 300;
 
 int SanitizeRefreshIntervalSeconds(int seconds) {
     switch (seconds) {
@@ -218,6 +218,21 @@ std::wstring FormatNumberNoUnit(double value) {
     return buffer;
 }
 
+std::wstring FormatCompactTokens(long long tokens) {
+    const wchar_t* unit = L""; double value = static_cast<double>(tokens);
+    if (tokens >= 1000000000LL) { value /= 1000000000.0; unit = L"B"; }
+    else if (tokens >= 1000000LL) { value /= 1000000.0; unit = L"M"; }
+    else if (tokens >= 1000LL) { value /= 1000.0; unit = L"K"; }
+    wchar_t buffer[32] = {}; swprintf_s(buffer, L"%.1f%s", value, unit); return buffer;
+}
+
+std::wstring FormatScope(const wchar_t* label, const LocalUsageScope& scope) {
+    const CostEstimate cost = EstimateApiEquivalentCost(scope);
+    if (!cost.available || !cost.complete) return std::wstring(label) + L" " + (scope.available ? FormatCompactTokens(scope.usage.totalTokens) : L"N/A") + L" ≈N/A";
+    wchar_t money[32] = {}; swprintf_s(money, L"$%.2f", cost.usd);
+    return std::wstring(label) + L" " + FormatCompactTokens(scope.usage.totalTokens) + L" ≈" + money;
+}
+
 PaceInfo BuildPaceInfo(const UsageSnapshot& snapshot) {
     PaceInfo info;
     if (!snapshot.success) {
@@ -305,6 +320,7 @@ bool AppBarWindow::Create() {
     SetTimer(hwnd_, kCountdownTimerId, 1000, nullptr);
     RestartRefreshTimer();
     RequestRefresh(true);
+    RequestLocalUsageRefresh();
     RequestLatestReleaseCheck(true);
     return true;
 }
@@ -343,8 +359,12 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 }
                 refreshCountdownSeconds_ = std::max(0, refreshCountdownSeconds_ - 1);
                 releaseCheckCountdownSeconds_ = std::max(0, releaseCheckCountdownSeconds_ - 1);
+                localUsageRefreshCountdownSeconds_ = std::max(0, localUsageRefreshCountdownSeconds_ - 1);
                 if (releaseCheckCountdownSeconds_ == 0) {
                     RequestLatestReleaseCheck(false);
+                }
+                if (localUsageRefreshCountdownSeconds_ == 0) {
+                    RequestLocalUsageRefresh();
                 }
                 InvalidateRect(hwnd_, nullptr, FALSE);
             } else if (wParam == kRefreshTimerId) {
@@ -370,6 +390,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_THEMECHANGED:
             RefreshTheme();
+            if (taskbarMode_) UpdateWindowBounds(false);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
 
@@ -474,6 +495,9 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
         case kTokenRefreshedMessage:
             OnTokenRefreshed(reinterpret_cast<TokenRefreshResult*>(lParam));
             return 0;
+        case kLocalUsageUpdatedMessage:
+            OnLocalUsageUpdated(reinterpret_cast<LocalUsageSnapshot*>(lParam));
+            return 0;
 
         case WM_DESTROY:
             KillTimer(hwnd_, kCountdownTimerId);
@@ -543,9 +567,39 @@ RECT AppBarWindow::GetCurrentMonitorWorkRect() const {
 
 int AppBarWindow::GetMinimumWidgetWidth() const {
     if (taskbarMode_) {
-        return ScaleForDpi(hwnd_, kTaskbarMinimumWidgetWidth);
+        return GetTaskbarPreferredWidth();
     }
     return ScaleForDpi(hwnd_, simpleMode_ ? kSimpleMinimumWidgetWidth : kMinimumWidgetWidth);
+}
+
+int AppBarWindow::GetTaskbarPreferredWidth() const {
+    const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_);
+    const int labelHeight = ScaleForDpi(hwnd_, 12);
+    const int valueHeight = ScaleForDpi(hwnd_, 17);
+    const HWND target = hwnd_ != nullptr ? hwnd_ : GetDesktopWindow();
+    HDC hdc = GetDC(target);
+    if (hdc == nullptr) return ScaleForDpi(hwnd_, 240);
+
+    auto measure = [&](const std::wstring& text, int height, int weight) {
+        HFONT font = CreateFontW(-height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(hdc, font);
+        SIZE size = {};
+        GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &size);
+        SelectObject(hdc, oldFont);
+        DeleteObject(font);
+        return size.cx;
+    };
+
+    std::vector<int> cardWidths;
+    cardWidths.reserve(cards.size());
+    for (const auto& card : cards) {
+        cardWidths.push_back(std::max(
+            measure(card.label, labelHeight, FW_NORMAL),
+            measure(card.value, valueHeight, FW_SEMIBOLD)));
+    }
+    ReleaseDC(target, hdc);
+    return CalculateTaskbarCardRowWidth(cardWidths, ScaleForDpi(hwnd_, 4), ScaleForDpi(hwnd_, 10), ScaleForDpi(hwnd_, 4));
 }
 
 int AppBarWindow::GetMinimumWidgetHeight(int width) const {
@@ -576,6 +630,7 @@ void AppBarWindow::SetLanguage(Language language) {
     language_ = language;
     if (hwnd_ != nullptr) {
         SetWindowTextW(hwnd_, LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"));
+        if (taskbarMode_) UpdateWindowBounds(false);
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
     SaveSettings();
@@ -660,7 +715,7 @@ RECT AppBarWindow::BuildTaskbarDockRect() const {
     }
 
     const int margin = ScaleForDpi(hwnd_, 4);
-    const int width = ScaleForDpi(hwnd_, kTaskbarDefaultWidgetWidth);
+    const int width = GetTaskbarPreferredWidth();
     const int height = CalculateTaskbarWidgetHeight(hwnd_);
     const int leftGap = std::max(0, static_cast<int>(workRect.left - monitorRect.left));
     const int topGap = std::max(0, static_cast<int>(workRect.top - monitorRect.top));
@@ -1112,16 +1167,48 @@ void AppBarWindow::RequestRefresh(bool force) {
 void AppBarWindow::OnUsageUpdated(UsageSnapshot* snapshot) {
     std::unique_ptr<UsageSnapshot> holder(snapshot);
     refreshInFlight_ = false;
+    const long long previousWeeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
     if (snapshot != nullptr) {
         snapshot_ = *snapshot;
         if (snapshot_.success) {
             lastSuccessfulRefreshUnixSeconds_ = static_cast<long long>(std::time(nullptr));
         }
     }
-    // Limit-lane count (5h present/absent) and credit rows change preferred height.
-    if (!taskbarMode_) {
-        FitWindowToContent();
+    const long long updatedWeeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
+    // The initial local scan can finish before the remote quota response. Once
+    // its authoritative weekly boundary arrives, rescan immediately.
+    if (updatedWeeklyStart != previousWeeklyStart || updatedWeeklyStart != localUsageWeeklyStartUnixSeconds_) {
+        RequestLocalUsageRefresh();
     }
+    FitWindowToContent();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void AppBarWindow::RequestLocalUsageRefresh() {
+    if (localUsageRefreshInFlight_.exchange(true)) {
+        return;
+    }
+    localUsageRefreshCountdownSeconds_ = kLocalUsageRefreshIntervalSeconds;
+    const long long weeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
+    localUsageWeeklyStartUnixSeconds_ = weeklyStart;
+    const HWND target = hwnd_;
+    std::thread([this, target, weeklyStart]() {
+        auto* result = new LocalUsageSnapshot(localUsageReader_.Scan(weeklyStart));
+        PostMessageW(target, kLocalUsageUpdatedMessage, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
+
+void AppBarWindow::OnLocalUsageUpdated(LocalUsageSnapshot* snapshot) {
+    std::unique_ptr<LocalUsageSnapshot> holder(snapshot);
+    localUsageRefreshInFlight_ = false;
+    if (snapshot != nullptr) {
+        localUsage_ = *snapshot;
+    }
+    const long long currentWeeklyStart = snapshot_.weekly.hasStartAt ? snapshot_.weekly.startAtUnixSeconds : 0;
+    if (currentWeeklyStart != localUsageWeeklyStartUnixSeconds_) {
+        RequestLocalUsageRefresh();
+    }
+    if (taskbarMode_) FitWindowToContent();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1455,6 +1542,16 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         renderTarget_->DrawRectangle(ToRectF(rect), solidBrush_.Get(), 1.0f);
     };
 
+    auto fillRoundedRect = [&](const RECT& rect, int radius, COLORREF color) {
+        solidBrush_->SetColor(ToColorF(color));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(ToRectF(rect), static_cast<float>(radius), static_cast<float>(radius)), solidBrush_.Get());
+    };
+
+    auto drawRoundedBorder = [&](const RECT& rect, int radius, COLORREF color) {
+        solidBrush_->SetColor(ToColorF(color));
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(ToRectF(rect), static_cast<float>(radius), static_cast<float>(radius)), solidBrush_.Get(), 1.0f);
+    };
+
     auto drawTextBlock = [&](IDWriteTextFormat* format,
                              const std::wstring& text,
                              const RECT& rect,
@@ -1514,6 +1611,41 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         }
         return metrics.widthIncludingTrailingWhitespace;
     };
+
+    if (taskbarMode_) {
+        // The parent is only a thin DPI-scaled margin around independent cards.
+        fillRect(clientRect, lightTheme_ ? RGB(246, 248, 247) : RGB(20, 24, 22));
+        const int outerPad = ScaleForDpi(hwnd_, 4);
+        const int gap = ScaleForDpi(hwnd_, 4);
+        const int cardPad = ScaleForDpi(hwnd_, 10);
+        const int corner = ScaleForDpi(hwnd_, 9);
+        const int labelHeight = ScaleForDpi(hwnd_, 16);
+        const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_);
+        const COLORREF cardFill = lightTheme_ ? RGB(255, 255, 255) : RGB(39, 46, 42);
+        const COLORREF cardBorder = lightTheme_ ? RGB(218, 224, 220) : RGB(71, 81, 75);
+        const COLORREF cardShadow = lightTheme_ ? RGB(231, 235, 232) : RGB(12, 15, 14);
+        const int cardTop = clientRect.top + outerPad;
+        const int cardBottom = clientRect.bottom - outerPad;
+        int left = clientRect.left + outerPad;
+        for (const auto& card : cards) {
+            const int contentWidth = static_cast<int>(std::ceil(std::max(
+                measureTextWidth(textFormatKicker_.Get(), card.label),
+                measureTextWidth(textFormatMetricValue_.Get(), card.value))));
+            const int cardWidth = contentWidth + cardPad * 2;
+            const RECT rect = MakeRect(left, cardTop, left + cardWidth, cardBottom);
+            fillRoundedRect(MakeRect(rect.left + 1, rect.top + 1, rect.right + 1, rect.bottom + 1), corner, cardShadow);
+            fillRoundedRect(rect, corner, cardFill);
+            drawRoundedBorder(rect, corner, cardBorder);
+            drawTextBlock(textFormatKicker_.Get(), card.label,
+                MakeRect(rect.left + cardPad, rect.top + ScaleForDpi(hwnd_, 3), rect.right - cardPad, rect.top + labelHeight + ScaleForDpi(hwnd_, 3)),
+                textSecondary, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+            drawTextBlock(textFormatMetricValue_.Get(), card.value,
+                MakeRect(rect.left + cardPad, rect.top + labelHeight, rect.right - cardPad, rect.bottom - ScaleForDpi(hwnd_, 2)),
+                textPrimary, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+            left = rect.right + gap;
+        }
+        return;
+    }
 
     if (taskbarMode_) {
         fillRect(MakeRect(clientRect.left + 1, clientRect.top + 2, clientRect.right + 1, clientRect.bottom + 2), shadow);

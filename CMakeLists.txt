@@ -33,6 +33,9 @@ add_executable(CodexUsageBar WIN32
     src/AppBarWindow.cpp
     src/CodexUsageFetcher.cpp
     src/JsonLite.cpp
+    src/LocalUsageReader.cpp
+    src/Pricing.cpp
+    src/TaskbarPresentation.cpp
 )
 
 target_include_directories(CodexUsageBar PRIVATE src)
@@ -59,3 +62,18 @@ target_link_libraries(CodexUsageBar PRIVATE
     user32
     winhttp
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(LocalUsageTests
+        tests/LocalUsageTests.cpp
+        src/LocalUsageReader.cpp
+        src/Pricing.cpp
+        src/TaskbarPresentation.cpp
+        src/JsonLite.cpp
+    )
+    target_include_directories(LocalUsageTests PRIVATE src)
+    target_compile_definitions(LocalUsageTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(LocalUsageTests PRIVATE /utf-8)
+    add_test(NAME LocalUsageTests COMMAND LocalUsageTests)
+endif()
