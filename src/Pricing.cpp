@@ -56,15 +56,15 @@ CostEstimate EstimateApiEquivalentCost(const TokenUsage& usage, const std::wstri
 CostEstimate EstimateApiEquivalentCost(const LocalUsageScope& scope) {
     if (!scope.available || scope.byModel.empty()) return {};
     CostEstimate result;
-    result.available = true;
+    result.available = false;
     result.complete = true;
     for (const auto& [model, usage] : scope.byModel) {
         const CostEstimate part = EstimateApiEquivalentCost(usage, model);
         if (!part.available) {
-            result.available = false;
             result.complete = false;
-            return result;
+            continue;
         }
+        result.available = true;
         result.usd += part.usd;
     }
     return result;

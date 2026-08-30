@@ -14,7 +14,7 @@
 namespace {
 
 struct Date { int year = 0; int month = 0; int day = 0; };
-struct Event { Date date; std::wstring model; TokenUsage total; std::optional<TokenUsage> last; };
+struct Event { Date date; long long unixSeconds = 0; std::wstring model; TokenUsage total; std::optional<TokenUsage> last; };
 struct Session { std::filesystem::file_time_type modified; std::vector<Event> events; };
 
 std::wstring Wide(const std::string_view text) {
@@ -94,6 +94,32 @@ Date ParseDate(const jsonlite::Value& line, std::optional<int> localUtcOffsetMin
     return date;
 }
 
+long long ParseUnixSeconds(const jsonlite::Value& line) {
+    const auto* stamp = line.Find("timestamp");
+    const auto text = stamp ? stamp->AsString() : std::nullopt;
+    if (!text || text->size() < 19) return 0;
+    try {
+        SYSTEMTIME parsed{};
+        parsed.wYear = static_cast<WORD>(std::stoi(std::string(text->substr(0, 4))));
+        parsed.wMonth = static_cast<WORD>(std::stoi(std::string(text->substr(5, 2))));
+        parsed.wDay = static_cast<WORD>(std::stoi(std::string(text->substr(8, 2))));
+        parsed.wHour = static_cast<WORD>(std::stoi(std::string(text->substr(11, 2))));
+        parsed.wMinute = static_cast<WORD>(std::stoi(std::string(text->substr(14, 2))));
+        parsed.wSecond = static_cast<WORD>(std::stoi(std::string(text->substr(17, 2))));
+        const size_t timezone = text->find_first_of("Zz+-", 19);
+        int offsetMinutes = 0;
+        if (timezone != std::string_view::npos && (*text)[timezone] != 'Z' && (*text)[timezone] != 'z') {
+            const int sign = (*text)[timezone] == '+' ? 1 : -1;
+            offsetMinutes = sign * (std::stoi(std::string(text->substr(timezone + 1, 2))) * 60
+                + std::stoi(std::string(text->substr(timezone + 4, 2))));
+        }
+        FILETIME fileTime{};
+        if (!SystemTimeToFileTime(&parsed, &fileTime)) return 0;
+        ULARGE_INTEGER value{}; value.LowPart = fileTime.dwLowDateTime; value.HighPart = fileTime.dwHighDateTime;
+        return static_cast<long long>(value.QuadPart / 10000000ULL) - 11644473600LL - static_cast<long long>(offsetMinutes) * 60LL;
+    } catch (...) { return 0; }
+}
+
 bool SameDate(const Date& a, const Date& b) { return a.year == b.year && a.month == b.month && a.day == b.day; }
 bool IsAtLeast(const TokenUsage& next, const TokenUsage& previous) {
     return next.inputTokens >= previous.inputTokens && next.cachedInputTokens >= previous.cachedInputTokens
@@ -126,12 +152,12 @@ std::filesystem::path ResolveHome(std::filesystem::path home) {
 LocalUsageReader::LocalUsageReader(std::filesystem::path codexHome, std::optional<int> localUtcOffsetMinutesForTesting)
     : codexHome_(ResolveHome(std::move(codexHome))), localUtcOffsetMinutesForTesting_(localUtcOffsetMinutesForTesting) {}
 
-LocalUsageSnapshot LocalUsageReader::Scan() const {
+LocalUsageSnapshot LocalUsageReader::Scan(long long weeklyStartUnixSeconds) const {
     SYSTEMTIME now{}; GetLocalTime(&now);
-    return ScanForLocalDate(now.wYear, now.wMonth, now.wDay);
+    return ScanForLocalDate(now.wYear, now.wMonth, now.wDay, weeklyStartUnixSeconds);
 }
 
-LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int day) const {
+LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int day, long long weeklyStartUnixSeconds) const {
     LocalUsageSnapshot result;
     std::vector<Session> sessions;
     const auto tree = codexHome_ / L"sessions";
@@ -150,7 +176,7 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
             if (const auto* modelNode = FindDescendant(*parsed, "model")) if (const auto value = modelNode->AsString()) model = Wide(*value);
             const auto total = UsageFrom(FindDescendant(*parsed, "total_token_usage"));
             if (!total) continue;
-            Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.model = model; event.total = *total;
+            Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.unixSeconds = ParseUnixSeconds(*parsed); event.model = model; event.total = *total;
             event.last = UsageFrom(FindDescendant(*parsed, "last_token_usage"));
             session.events.push_back(std::move(event));
         }
@@ -168,12 +194,14 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
             if (!havePrevious) {
                 AddToScope(&sessionTotal, event.total, event.model);
                 if (SameDate(event.date, today)) AddToScope(&result.today, event.total, event.model);
+                if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, event.total, event.model);
                 previous = event.total; havePrevious = true; continue;
             }
             if (!IsAtLeast(event.total, previous)) { previous = event.total; continue; }
             const TokenUsage delta = Difference(event.total, previous);
             AddToScope(&sessionTotal, delta, event.model);
             if (SameDate(event.date, today)) AddToScope(&result.today, delta, event.model);
+            if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, delta, event.model);
             previous = event.total;
         }
         result.tillNow.available = true;

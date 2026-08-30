@@ -44,8 +44,8 @@ constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 360;
 constexpr int kSimpleDefaultWidgetWidth = 240;
 constexpr int kSimpleMinimumWidgetWidth = 220;
-constexpr int kTaskbarDefaultWidgetWidth = 1004;
-constexpr int kTaskbarMinimumWidgetWidth = 720;
+constexpr int kTaskbarDefaultWidgetWidth = 500;
+constexpr int kTaskbarMinimumWidgetWidth = 360;
 constexpr int kTaskbarWidgetHeight = 34;
 constexpr int kDesktopMargin = 18;
 constexpr int kHorizontalPadding = 14;
@@ -232,6 +232,14 @@ std::wstring FormatScope(const wchar_t* label, const LocalUsageScope& scope) {
     if (!cost.available || !cost.complete) return std::wstring(label) + L" " + (scope.available ? FormatCompactTokens(scope.usage.totalTokens) : L"N/A") + L" ≈N/A";
     wchar_t money[32] = {}; swprintf_s(money, L"$%.2f", cost.usd);
     return std::wstring(label) + L" " + FormatCompactTokens(scope.usage.totalTokens) + L" ≈" + money;
+}
+
+std::wstring FormatCompactCost(const LocalUsageScope& scope) {
+    const CostEstimate cost = EstimateApiEquivalentCost(scope);
+    if (!cost.available) return L"N/A";
+    wchar_t money[32] = {};
+    swprintf_s(money, cost.complete ? L"≈$%.2f" : L"≥$%.2f", cost.usd);
+    return money;
 }
 
 PaceInfo BuildPaceInfo(const UsageSnapshot& snapshot) {
@@ -1154,9 +1162,11 @@ void AppBarWindow::RequestLocalUsageRefresh() {
         return;
     }
     localUsageRefreshCountdownSeconds_ = kLocalUsageRefreshIntervalSeconds;
+    const long long weeklyStart = snapshot_.weekly.hasStart ? snapshot_.weekly.startAtUnixSeconds : 0;
+    localUsageWeeklyStartUnixSeconds_ = weeklyStart;
     const HWND target = hwnd_;
-    std::thread([this, target]() {
-        auto* result = new LocalUsageSnapshot(localUsageReader_.Scan());
+    std::thread([this, target, weeklyStart]() {
+        auto* result = new LocalUsageSnapshot(localUsageReader_.Scan(weeklyStart));
         PostMessageW(target, kLocalUsageUpdatedMessage, 0, reinterpret_cast<LPARAM>(result));
     }).detach();
 }
@@ -1166,6 +1176,10 @@ void AppBarWindow::OnLocalUsageUpdated(LocalUsageSnapshot* snapshot) {
     localUsageRefreshInFlight_ = false;
     if (snapshot != nullptr) {
         localUsage_ = *snapshot;
+    }
+    const long long currentWeeklyStart = snapshot_.weekly.hasStart ? snapshot_.weekly.startAtUnixSeconds : 0;
+    if (currentWeeklyStart != localUsageWeeklyStartUnixSeconds_) {
+        RequestLocalUsageRefresh();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -1564,11 +1578,15 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         fillRect(MakeRect(clientRect.left + 1, clientRect.top + 2, clientRect.right + 1, clientRect.bottom + 2), shadow);
         fillRect(clientRect, background);
         drawRectBorder(clientRect, border);
-        const std::wstring five = snapshot_.success && snapshot_.fiveHour.available ? FormatPercent(snapshot_.fiveHour.remainingPercent) : L"N/A";
-        const std::wstring week = snapshot_.success && snapshot_.weekly.available ? FormatPercent(snapshot_.weekly.remainingPercent) : L"N/A";
-        const std::wstring strip = L"5h " + five + L" | Week " + week + L" | "
-            + FormatScope(L"Task", localUsage_.task) + L" | " + FormatScope(L"Last", localUsage_.last)
-            + L" | " + FormatScope(L"Today", localUsage_.today) + L" | " + FormatScope(L"Till Now", localUsage_.tillNow);
+        std::wstring strip;
+        if (snapshot_.success && snapshot_.fiveHour.available) {
+            strip += L"5H " + std::to_wstring(snapshot_.fiveHour.remainingPercent) + L"% | ";
+        }
+        strip += L"周 " + (snapshot_.success && snapshot_.weekly.available
+            ? std::to_wstring(snapshot_.weekly.remainingPercent) + L"%"
+            : L"N/A");
+        strip += L" | 周消费 " + FormatCompactCost(localUsage_.weekly);
+        strip += L" | 总消费 " + FormatCompactCost(localUsage_.tillNow);
         const int pad = ScaleForDpi(hwnd_, 9);
         drawTextBlock(textFormatFoot_.Get(), strip, MakeRect(clientRect.left + pad, clientRect.top, clientRect.right - pad, clientRect.bottom),
             textPrimary, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);

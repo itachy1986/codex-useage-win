@@ -144,6 +144,7 @@ private:
     int refreshCountdownSeconds_ = 60;
     int releaseCheckCountdownSeconds_ = 6 * 60 * 60;
     int localUsageRefreshCountdownSeconds_ = 0;
+    long long localUsageWeeklyStartUnixSeconds_ = 0;
     std::wstring latestReleaseTag_;
     std::wstring releaseCheckErrorMessage_;
     std::wstring resetCreditActionMessage_;

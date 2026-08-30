@@ -124,6 +124,24 @@ void TestLocalDateAndMixedModelAttribution() {
         "A mixed-model session prices each model delta independently");
 }
 
+void TestWeeklyCycleAndIncompleteLifetimeCost() {
+    const auto root = MakeFixtureRoot();
+    WriteSession(root, "current.jsonl",
+        TokenEvent("2026-08-30T09:00:00Z", "gpt-5.6-sol", 100, 0, 0, 0, 100)
+        + TokenEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol", 200, 0, 0, 0, 200));
+    const LocalUsageSnapshot snapshot = LocalUsageReader(root, 0).ScanForLocalDate(2026, 8, 30, 1788084000);
+    Expect(snapshot.weekly.available && snapshot.weekly.usage.totalTokens == 100,
+        "Weekly cost window excludes cumulative usage before the remote cycle start");
+
+    LocalUsageScope mixed;
+    mixed.available = true;
+    mixed.byModel[L"gpt-5.6-sol"].inputTokens = 1000000;
+    mixed.byModel[L"unknown-model"].inputTokens = 1000000;
+    const CostEstimate lowerBound = EstimateApiEquivalentCost(mixed);
+    Expect(lowerBound.available && !lowerBound.complete && std::abs(lowerBound.usd - 4.0) < 0.000001,
+        "Partially unpriced lifetime usage exposes a priced lower bound");
+}
+
 void TestFixturesAreRedacted() {
     const std::string fixture = TokenEvent("2026-08-30T10:00:00", "gpt-5.6-sol", 1, 0, 0, 1, 2);
     Expect(fixture.find("access_token") == std::string::npos && fixture.find("content") == std::string::npos,
@@ -136,6 +154,7 @@ int main() {
     TestAccounting();
     TestSafeDegradationAndPricing();
     TestLocalDateAndMixedModelAttribution();
+    TestWeeklyCycleAndIncompleteLifetimeCost();
     TestFixturesAreRedacted();
     return failures == 0 ? 0 : 1;
 }
