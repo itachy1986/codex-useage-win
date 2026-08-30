@@ -93,9 +93,15 @@ void TestSafeDegradationAndPricing() {
         "Model pricing separates uncached, cached, cache-write, and output tokens");
     Expect(std::wstring(PricingVersion()).find(L"2026-08-30") != std::wstring::npos,
         "Pricing table carries an explicit effective date");
-    const CostEstimate unverifiedCacheWrite = EstimateApiEquivalentCost(usage, L"gpt-5.6-terra");
-    Expect(!unverifiedCacheWrite.available && !unverifiedCacheWrite.complete,
-        "Unverified model cache-write pricing is incomplete rather than estimated");
+    const CostEstimate terra = EstimateApiEquivalentCost(usage, L"gpt-5.6-terra");
+    Expect(terra.available && terra.complete && std::abs(terra.usd - 7.69) < 0.001,
+        "GPT-5.6 Terra applies its verified cache-write multiplier");
+    const CostEstimate luna = EstimateApiEquivalentCost(usage, L"gpt-5.6-luna");
+    Expect(luna.available && luna.complete && std::abs(luna.usd - 0.769) < 0.001,
+        "GPT-5.6 Luna applies its verified cache-write multiplier");
+    const CostEstimate unknownCacheWrite = EstimateApiEquivalentCost(usage, L"unknown-model");
+    Expect(!unknownCacheWrite.available && !unknownCacheWrite.complete,
+        "Unknown model cache-write pricing remains incomplete rather than estimated");
 }
 
 void TestLocalDateAndMixedModelAttribution() {

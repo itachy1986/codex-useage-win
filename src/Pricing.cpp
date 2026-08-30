@@ -21,8 +21,8 @@ std::wstring Normalize(std::wstring model) {
 const Rate* FindRate(const std::wstring& rawModel) {
     static const Rate sol{4.0, 0.4, 20.0, 1.25};
     static const Rate gpt55{5.0, 0.5, 30.0, std::nullopt};
-    static const Rate terra{2.0, 0.2, 12.0, std::nullopt};
-    static const Rate luna{0.2, 0.02, 1.2, std::nullopt};
+    static const Rate terra{2.0, 0.2, 12.0, 1.25};
+    static const Rate luna{0.2, 0.02, 1.2, 1.25};
     const std::wstring model = Normalize(rawModel);
     if (model == L"gpt-5.6" || model == L"gpt-5.6-sol") return &sol;
     if (model == L"gpt-5.5") return &gpt55;
