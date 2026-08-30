@@ -36,6 +36,9 @@ jobs:
       - name: Build Release
         run: cmake --build build-${{ matrix.arch }} --config Release
 
+      - name: Run tests
+        run: ctest --test-dir build-${{ matrix.arch }} -C Release --output-on-failure
+
       - name: Prepare artifact
         shell: powershell
         run: |
