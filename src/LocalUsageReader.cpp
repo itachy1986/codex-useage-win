@@ -63,19 +63,8 @@ std::optional<ModelAttribution> CanonicalModelFromMetadata(const jsonlite::Value
     const auto value = model != nullptr ? model->AsString() : std::nullopt;
     if (value && !value->empty()) return ModelAttribution{Wide(*value), AttributionSource::CanonicalMetadata};
 
-    // This is intentionally a narrow, schema-bound mapping. It is consulted only
-    // from thread_settings_applied and never from arbitrary JSON strings.
-    if (*type == "thread_settings_applied") {
-        const auto* settings = payload->Find("thread_settings");
-        const auto* feature = settings != nullptr ? settings->Find("feature") : nullptr;
-        const auto featureName = feature != nullptr ? feature->AsString() : std::nullopt;
-        if (featureName && *featureName == "code_review") {
-            return ModelAttribution{L"gpt-5.3-codex", AttributionSource::ValidatedFeatureMapping};
-        }
-        if (featureName && *featureName == "auto_review") {
-            return ModelAttribution{L"gpt-5.4", AttributionSource::ValidatedFeatureMapping};
-        }
-    }
+    // Current OpenAI Codex ThreadSettingsSnapshot has no feature/review field.
+    // Without a published local signal, feature names must not imply a model.
     return std::nullopt;
 }
 
@@ -182,16 +171,27 @@ TokenUsage Difference(const TokenUsage& a, const TokenUsage& b) {
     return {a.inputTokens-b.inputTokens, a.cachedInputTokens-b.cachedInputTokens, a.cacheWriteInputTokens-b.cacheWriteInputTokens,
         a.outputTokens-b.outputTokens, a.totalTokens-b.totalTokens};
 }
+bool IsSameUsage(const TokenUsage& left, const TokenUsage& right) {
+    return left.inputTokens == right.inputTokens && left.cachedInputTokens == right.cachedInputTokens
+        && left.cacheWriteInputTokens == right.cacheWriteInputTokens && left.outputTokens == right.outputTokens
+        && left.totalTokens == right.totalTokens;
+}
+bool IsStructurallyValidLastUsage(const TokenUsage& usage) {
+    return usage.totalTokens > 0 && usage.inputTokens <= usage.totalTokens
+        && usage.outputTokens <= usage.totalTokens - usage.inputTokens
+        && usage.cachedInputTokens <= usage.inputTokens && usage.cacheWriteInputTokens <= usage.inputTokens;
+}
 void Add(TokenUsage* to, const TokenUsage& from) {
     to->inputTokens += from.inputTokens; to->cachedInputTokens += from.cachedInputTokens; to->cacheWriteInputTokens += from.cacheWriteInputTokens;
     to->outputTokens += from.outputTokens; to->totalTokens += from.totalTokens;
 }
 void AddToScope(LocalUsageScope* scope, const TokenUsage& usage, const std::wstring& model,
-    AttributionSource attribution, long long unixSeconds) {
+    AttributionSource attribution, long long unixSeconds, LedgerUsageSource usageSource = LedgerUsageSource::CumulativeDelta,
+    const TokenUsage* ledgerUsage = nullptr) {
     scope->available = true;
     Add(&scope->usage, usage);
     Add(&scope->byModel[model], usage);
-    scope->entries.push_back({unixSeconds, model, attribution, usage});
+    scope->entries.push_back({unixSeconds, model, attribution, ledgerUsage != nullptr ? *ledgerUsage : usage, usageSource});
 }
 
 std::filesystem::path ResolveHome(std::filesystem::path home) {
@@ -256,19 +256,29 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
         for (const auto& event : session.events) {
             if (event.last && &session == &sessions.back()) {
                 result.last = {};
-                AddToScope(&result.last, *event.last, event.model, event.attribution, event.unixSeconds);
+                AddToScope(&result.last, *event.last, event.model, event.attribution, event.unixSeconds,
+                    LedgerUsageSource::LastTokenUsage);
             }
+            const auto addAccountingIncrement = [&](const TokenUsage& increment) {
+                const bool useLast = event.last && IsStructurallyValidLastUsage(*event.last)
+                    && IsSameUsage(*event.last, increment);
+                const LedgerUsageSource source = useLast
+                    ? LedgerUsageSource::LastTokenUsage
+                    : LedgerUsageSource::CumulativeDelta;
+                const TokenUsage& pricedUsage = useLast ? *event.last : increment;
+                AddToScope(&sessionTotal, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                if (SameDate(event.date, today)) AddToScope(&result.today, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) {
+                    AddToScope(&result.weekly, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                }
+            };
             if (!havePrevious) {
-                AddToScope(&sessionTotal, event.total, event.model, event.attribution, event.unixSeconds);
-                if (SameDate(event.date, today)) AddToScope(&result.today, event.total, event.model, event.attribution, event.unixSeconds);
-                if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, event.total, event.model, event.attribution, event.unixSeconds);
+                addAccountingIncrement(event.total);
                 previous = event.total; havePrevious = true; continue;
             }
             if (!IsAtLeast(event.total, previous)) { previous = event.total; continue; }
             const TokenUsage delta = Difference(event.total, previous);
-            AddToScope(&sessionTotal, delta, event.model, event.attribution, event.unixSeconds);
-            if (SameDate(event.date, today)) AddToScope(&result.today, delta, event.model, event.attribution, event.unixSeconds);
-            if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, delta, event.model, event.attribution, event.unixSeconds);
+            addAccountingIncrement(delta);
             previous = event.total;
         }
         result.tillNow.available = true;

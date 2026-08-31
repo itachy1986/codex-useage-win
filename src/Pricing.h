@@ -16,8 +16,12 @@ struct TokenUsage {
 // prompts, authentication data, or any user content.
 enum class AttributionSource {
     CanonicalMetadata,
-    ValidatedFeatureMapping,
     MissingOrExplicitUnpriced,
+};
+
+enum class LedgerUsageSource {
+    CumulativeDelta,
+    LastTokenUsage,
 };
 
 enum class PrimaryModel {
@@ -33,6 +37,7 @@ struct UsageLedgerEntry {
     std::wstring model;
     AttributionSource attribution = AttributionSource::MissingOrExplicitUnpriced;
     TokenUsage usage;
+    LedgerUsageSource usageSource = LedgerUsageSource::CumulativeDelta;
 };
 
 struct LocalUsageScope {

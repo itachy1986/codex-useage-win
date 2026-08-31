@@ -62,6 +62,24 @@ std::string BareTokenEvent(const char* timestamp, int input, int total) {
         + std::to_string(total) + "}}}}\n";
 }
 
+std::string TokenEventWithLast(const char* timestamp, int totalInput, int totalOutput, int total,
+    int lastInput, int lastOutput, int lastTotal) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":"
+        + std::to_string(totalInput) + ",\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":"
+        + std::to_string(totalOutput) + ",\"total_tokens\":" + std::to_string(total)
+        + "},\"last_token_usage\":{\"input_tokens\":" + std::to_string(lastInput)
+        + ",\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":" + std::to_string(lastOutput)
+        + ",\"total_tokens\":" + std::to_string(lastTotal) + "}}}}\n";
+}
+
+std::string TokenEventWithMalformedLast(const char* timestamp, int totalInput, int total) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":"
+        + std::to_string(totalInput) + ",\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":"
+        + std::to_string(total) + "},\"last_token_usage\":{\"total_tokens\":\"invalid\"}}}}\n";
+}
+
 std::string TokenEvent(const char* timestamp, const char* model, int input, int cached, int cacheWrite,
     int output, int total, int lastTotal = -1) {
     std::string event = ThreadSettingsEvent(timestamp, model)
@@ -300,17 +318,66 @@ void TestCostAccuracyV2() {
             "Verified catalog aliases and model rates are priced offline");
     }
 
-    const auto mappingRoot = MakeFixtureRoot();
-    WriteSession(mappingRoot, "current.jsonl",
-        FeatureMappingEvent("2026-08-30T10:00:00Z", "code_review") + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100)
-        + FeatureMappingEvent("2026-08-30T10:01:00Z", "auto_review") + BareTokenEvent("2026-08-30T10:01:00Z", 300, 300));
-    const LocalUsageSnapshot featureMapped = LocalUsageReader(mappingRoot, 0).ScanForLocalDate(2026, 8, 30);
-    Expect(featureMapped.task.byModel.count(L"gpt-5.3-codex") == 1
-            && featureMapped.task.byModel.count(L"gpt-5.4") == 1,
-        "Schema-bound Code Review and Auto Review mappings use the official canonical models");
-    const CostEstimate featureMappingCost = EstimateApiEquivalentCost(featureMapped.task);
-    Expect(featureMappingCost.complete && featureMappingCost.confirmedUsd > 0.0,
-        "Validated feature mappings are confirmed rather than Primary Model estimates");
+    const auto unsupportedFeatureRoot = MakeFixtureRoot();
+    WriteSession(unsupportedFeatureRoot, "current.jsonl",
+        FeatureMappingEvent("2026-08-30T10:00:00Z", "code_review") + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100));
+    const LocalUsageSnapshot unsupportedFeature = LocalUsageReader(unsupportedFeatureRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(unsupportedFeature.task.byModel.count(L"") == 1
+            && unsupportedFeature.task.byModel.count(L"gpt-5.3-codex") == 0,
+        "Unrecognized thread-settings fields cannot manufacture a review-model attribution");
+
+    const auto canonicalReviewRoot = MakeFixtureRoot();
+    WriteSession(canonicalReviewRoot, "current.jsonl",
+        ThreadSettingsEvent("2026-08-30T10:00:00Z", "gpt-5.3-codex") + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100)
+        + TurnContextEvent("2026-08-30T10:01:00Z", "gpt-5.4") + BareTokenEvent("2026-08-30T10:01:00Z", 300, 300));
+    const LocalUsageSnapshot canonicalReview = LocalUsageReader(canonicalReviewRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(canonicalReview.task.byModel.count(L"gpt-5.3-codex") == 1
+            && canonicalReview.task.byModel.count(L"gpt-5.4") == 1,
+        "Real rollout model fields attribute review usage only when they explicitly name a model");
+
+    const auto lastTurnRoot = MakeFixtureRoot();
+    WriteSession(lastTurnRoot, "current.jsonl",
+        ThreadSettingsEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol")
+        + TokenEventWithLast("2026-08-30T10:00:00Z", 100000, 0, 100000, 100000, 0, 100000)
+        + TokenEventWithLast("2026-08-30T10:01:00Z", 400000, 0, 400000, 300000, 0, 300000)
+        + TokenEventWithLast("2026-08-30T10:02:00Z", 400000, 0, 400000, 300000, 0, 300000));
+    const LocalUsageSnapshot lastTurn = LocalUsageReader(lastTurnRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(lastTurn.task.usage.totalTokens == 400000 && lastTurn.task.entries.size() == 2
+            && lastTurn.task.entries[0].usageSource == LedgerUsageSource::LastTokenUsage
+            && lastTurn.task.entries[1].usageSource == LedgerUsageSource::LastTokenUsage,
+        "Consistent last_token_usage reconstructs turn ledger entries and duplicate totals do not duplicate charges");
+    const CostEstimate lastTurnCost = EstimateApiEquivalentCost(lastTurn.task);
+    Expect(lastTurnCost.complete && std::abs(lastTurnCost.confirmedUsd - 2.8) < 0.000001,
+        "Only the above-272K last-token turn receives the long-context multiplier");
+
+    const auto fallbackRoot = MakeFixtureRoot();
+    WriteSession(fallbackRoot, "current.jsonl",
+        ThreadSettingsEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol")
+        + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100)
+        + TokenEventWithLast("2026-08-30T10:01:00Z", 300, 0, 300, 50, 0, 50));
+    const LocalUsageSnapshot fallback = LocalUsageReader(fallbackRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(fallback.task.entries.size() == 2
+            && fallback.task.entries[0].usageSource == LedgerUsageSource::CumulativeDelta,
+        "Missing last_token_usage falls back to the cumulative delta");
+    Expect(fallback.task.entries.size() == 2
+            && fallback.task.entries[1].usageSource == LedgerUsageSource::CumulativeDelta,
+        "Inconsistent last_token_usage falls back to the cumulative delta");
+
+    const auto malformedLastRoot = MakeFixtureRoot();
+    WriteSession(malformedLastRoot, "current.jsonl",
+        ThreadSettingsEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol")
+        + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100)
+        + TokenEventWithMalformedLast("2026-08-30T10:01:00Z", 300, 300));
+    const LocalUsageSnapshot malformedLast = LocalUsageReader(malformedLastRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(malformedLast.task.entries.size() == 2
+            && malformedLast.task.entries[1].usageSource == LedgerUsageSource::CumulativeDelta,
+        "Malformed last_token_usage degrades to a cumulative delta without losing total accounting");
+
+    TokenUsage shortSol;
+    shortSol.inputTokens = 100000;
+    const CostEstimate shortSolCost = EstimateApiEquivalentCost(shortSol, L"gpt-5.6-sol");
+    Expect(shortSolCost.complete && std::abs(shortSolCost.confirmedUsd - 0.4) < 0.000001,
+        "Below-272K Sol input uses the documented base rate rather than a long-context rate");
 
     LocalUsageScope missing;
     missing.available = true;
