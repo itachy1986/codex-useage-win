@@ -58,16 +58,6 @@ API 等价成本按模型及 Token 类别计算，包括可验证的 uncached in
 
 当前布局示意：
 
-```text
-┌──────────┐  ┌──────────────┐
-│    周    │  │    周消费    │
-│   82%    │  │   ≥$28.80    │
-└──────────┘  └──────────────┘
-┌────────────────────────────┐
-│           总消费           │
-│          ≥$209.75          │
-└────────────────────────────┘
-```
 <img width="603" height="278" alt="image" src="https://github.com/user-attachments/assets/e29c3920-2b5b-4a95-83b8-289a9988d104" />
 
 ### Taskbar / 任务栏模式
@@ -76,9 +66,6 @@ API 等价成本按模型及 Token 类别计算，包括可验证的 uncached in
 
 当前布局示意：
 
-```text
-[ 周 82% ]  [ 周消费 ≥$28.80 ]  [ 总消费 ≥$209.75 ]
-```
 <img width="497" height="93" alt="image" src="https://github.com/user-attachments/assets/daf07d2b-0c13-4023-85f0-d2174e4eab1f" />
 
 
