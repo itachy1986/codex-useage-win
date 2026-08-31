@@ -49,6 +49,19 @@ std::string TurnContextEvent(const char* timestamp, const char* model) {
         + "\",\"payload\":{\"type\":\"turn_context\",\"model\":\"" + model + "\"}}\n";
 }
 
+std::string FeatureMappingEvent(const char* timestamp, const char* feature) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"thread_settings_applied\",\"thread_settings\":{\"feature\":\""
+        + feature + "\"}}}\n";
+}
+
+std::string BareTokenEvent(const char* timestamp, int input, int total) {
+    return "{\"timestamp\":\"" + std::string(timestamp)
+        + "\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":"
+        + std::to_string(input) + ",\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":"
+        + std::to_string(total) + "}}}}\n";
+}
+
 std::string TokenEvent(const char* timestamp, const char* model, int input, int cached, int cacheWrite,
     int output, int total, int lastTotal = -1) {
     std::string event = ThreadSettingsEvent(timestamp, model)
@@ -103,15 +116,15 @@ void TestSafeDegradationAndPricing() {
     usage.outputTokens = 500000;
     usage.totalTokens = 1500000;
     const CostEstimate sol = EstimateApiEquivalentCost(usage, L"gpt-5.6-sol");
-    Expect(sol.available && sol.complete && std::abs(sol.usd - 13.38) < 0.001,
-        "Model pricing separates uncached, cached, cache-write, and output tokens");
-    Expect(std::wstring(PricingVersion()).find(L"2026-08-30") != std::wstring::npos,
+    Expect(sol.available && sol.complete && std::abs(sol.usd - 21.76) < 0.001,
+        "Long-context Sol pricing separates uncached, cached, cache-write, and output tokens");
+    Expect(std::wstring(PricingVersion()).find(L"2026-08-31") != std::wstring::npos,
         "Pricing table carries an explicit effective date");
     const CostEstimate terra = EstimateApiEquivalentCost(usage, L"gpt-5.6-terra");
-    Expect(terra.available && terra.complete && std::abs(terra.usd - 7.69) < 0.001,
+    Expect(terra.available && terra.complete && std::abs(terra.usd - 12.38) < 0.001,
         "GPT-5.6 Terra applies its verified cache-write multiplier");
     const CostEstimate luna = EstimateApiEquivalentCost(usage, L"gpt-5.6-luna");
-    Expect(luna.available && luna.complete && std::abs(luna.usd - 0.769) < 0.001,
+    Expect(luna.available && luna.complete && std::abs(luna.usd - 1.238) < 0.001,
         "GPT-5.6 Luna applies its verified cache-write multiplier");
     const CostEstimate unknownCacheWrite = EstimateApiEquivalentCost(usage, L"unknown-model");
     Expect(!unknownCacheWrite.available && !unknownCacheWrite.complete,
@@ -273,6 +286,95 @@ void TestFixturesAreRedacted() {
         "Synthetic fixtures contain no credentials or conversation content");
 }
 
+void TestCostAccuracyV2() {
+    TokenUsage oneMillion;
+    oneMillion.inputTokens = 1000000;
+    const struct { const wchar_t* model; double usd; } rates[] = {
+        {L"gpt-5.6", 8.0}, {L"gpt-5.6-terra", 4.0}, {L"gpt-5.6-luna", 0.4},
+        {L"gpt-5.5", 10.0}, {L"gpt-5.4", 5.0}, {L"gpt-5.4-mini", 0.75},
+        {L"gpt-5.3-codex", 1.75}, {L"gpt-5.2", 1.75},
+    };
+    for (const auto& rate : rates) {
+        const CostEstimate estimate = EstimateApiEquivalentCost(oneMillion, rate.model);
+        Expect(estimate.available && std::abs(estimate.usd - rate.usd) < 0.000001,
+            "Verified catalog aliases and model rates are priced offline");
+    }
+
+    const auto mappingRoot = MakeFixtureRoot();
+    WriteSession(mappingRoot, "current.jsonl",
+        FeatureMappingEvent("2026-08-30T10:00:00Z", "code_review") + BareTokenEvent("2026-08-30T10:00:00Z", 100, 100)
+        + FeatureMappingEvent("2026-08-30T10:01:00Z", "auto_review") + BareTokenEvent("2026-08-30T10:01:00Z", 300, 300));
+    const LocalUsageSnapshot featureMapped = LocalUsageReader(mappingRoot, 0).ScanForLocalDate(2026, 8, 30);
+    Expect(featureMapped.task.byModel.count(L"gpt-5.3-codex") == 1
+            && featureMapped.task.byModel.count(L"gpt-5.4") == 1,
+        "Schema-bound Code Review and Auto Review mappings use the official canonical models");
+    const CostEstimate featureMappingCost = EstimateApiEquivalentCost(featureMapped.task);
+    Expect(featureMappingCost.complete && featureMappingCost.confirmedUsd > 0.0,
+        "Validated feature mappings are confirmed rather than Primary Model estimates");
+
+    LocalUsageScope missing;
+    missing.available = true;
+    missing.entries.push_back({100, L"", AttributionSource::MissingOrExplicitUnpriced, oneMillion});
+    const CostEstimate autoCost = EstimateApiEquivalentCost(missing);
+    Expect(autoCost.hasUnpriced && autoCost.confirmedUsd == 0.0 && !autoCost.usedPrimaryModelFallback,
+        "Auto leaves missing attribution unpriced instead of guessing");
+    const CostEstimate terraFallback = EstimateApiEquivalentCost(missing, PrimaryModel::Gpt56Terra);
+    Expect(terraFallback.complete && terraFallback.usedPrimaryModelFallback
+            && std::abs(terraFallback.estimatedUsd - 4.0) < 0.000001,
+        "Primary model fallback is separately marked estimated");
+
+    LocalUsageScope explicitUnknown;
+    explicitUnknown.available = true;
+    explicitUnknown.entries.push_back({101, L"deepseek-r1", AttributionSource::CanonicalMetadata, oneMillion});
+    const CostEstimate noOverride = EstimateApiEquivalentCost(explicitUnknown, PrimaryModel::Gpt56Sol);
+    Expect(noOverride.hasUnpriced && noOverride.estimatedUsd == 0.0,
+        "Primary model never overrides explicit non-OpenAI attribution");
+
+    TokenUsage long54;
+    long54.inputTokens = 273000;
+    long54.outputTokens = 100000;
+    const CostEstimate long54Cost = EstimateApiEquivalentCost(long54, L"gpt-5.4");
+    Expect(long54Cost.complete && std::abs(long54Cost.usd - 3.615) < 0.000001,
+        "Official long-context multiplier applies per reconstructed request");
+    const CostEstimate miniLong = EstimateApiEquivalentCost(long54, L"gpt-5.4-mini");
+    Expect(miniLong.complete && std::abs(miniLong.usd - 0.65475) < 0.000001,
+        "Unsupported long-context models do not receive an invented multiplier");
+
+    TokenUsage oldCacheWrite;
+    oldCacheWrite.inputTokens = 1000;
+    oldCacheWrite.cacheWriteInputTokens = 100;
+    const CostEstimate incompleteCacheWrite = EstimateApiEquivalentCost(oldCacheWrite, L"gpt-5.5");
+    Expect(incompleteCacheWrite.available && incompleteCacheWrite.hasUnpriced
+            && std::abs(incompleteCacheWrite.confirmedUsd - 0.0045) < 0.000001,
+        "Unproven cache-write rate is an incomplete component, not an invented charge");
+
+    Expect(PrimaryModelFromSetting(PrimaryModelSetting(PrimaryModel::Gpt56Luna)) == PrimaryModel::Gpt56Luna
+            && PrimaryModelFromSetting(L"invalid") == PrimaryModel::Auto,
+        "Primary model setting round-trips and safely defaults to Auto");
+
+    LocalUsageScope mixed;
+    mixed.available = true;
+    mixed.entries.push_back({1, L"gpt-5.6-sol", AttributionSource::CanonicalMetadata, oneMillion});
+    mixed.entries.push_back({2, L"", AttributionSource::MissingOrExplicitUnpriced, oneMillion});
+    mixed.entries.push_back({3, L"internal-unknown", AttributionSource::CanonicalMetadata, oneMillion});
+    const CostEstimate mixedCost = EstimateApiEquivalentCost(mixed, PrimaryModel::Gpt56Luna);
+    Expect(mixedCost.hasUnpriced && mixedCost.usedPrimaryModelFallback
+            && std::abs(mixedCost.confirmedUsd - 8.0) < 0.000001
+            && std::abs(mixedCost.estimatedUsd - 0.4) < 0.000001,
+        "Mixed confirmed, estimated, and unpriced entries retain separate aggregation");
+
+    LocalUsageSnapshot presentation;
+    presentation.weekly = mixed;
+    presentation.tillNow = mixed;
+    UsageSnapshot remote;
+    const auto cards = BuildTaskbarMetricCards(remote, presentation, PrimaryModel::Gpt56Luna);
+    Expect(cards.size() == 3 && cards[1].value.find(L"\u2265$8.00") != std::wstring::npos,
+        "Compact cards show confirmed lower bounds when any component is unpriced");
+    const auto standard = BuildStandardUsageMetricCards(presentation, PrimaryModel::Gpt56Luna);
+    Expect(standard[3].value.find(L"estimated") != std::wstring::npos,
+        "Standard presentation exposes fallback estimates separately");
+}
+
 }  // namespace
 
 int main() {
@@ -283,5 +385,6 @@ int main() {
     TestTaskbarPresentation();
     TestStandardAndSimplePresentations();
     TestFixturesAreRedacted();
+    TestCostAccuracyV2();
     return failures == 0 ? 0 : 1;
 }

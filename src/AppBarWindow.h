@@ -101,6 +101,7 @@ private:
     int GetTaskbarPreferredWidth() const;
     int GetMinimumWidgetHeight(int width) const;
     void SetLanguage(Language language);
+    void SetPrimaryModel(PrimaryModel model);
     void SetRefreshIntervalSeconds(int seconds);
     void RestartRefreshTimer();
     const wchar_t* LocalizeText(const wchar_t* english, const wchar_t* chinese) const;
@@ -128,6 +129,7 @@ private:
     bool lockPosition_ = false;
     bool simpleMode_ = false;
     bool taskbarMode_ = false;
+    PrimaryModel primaryModel_ = PrimaryModel::Auto;
     bool hasReleaseCheckResult_ = false;
     bool updateAvailable_ = false;
     // 0 = idle, 1/2 = armed steps, 3rd click opens MessageBox before consume.
