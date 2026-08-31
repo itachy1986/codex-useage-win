@@ -14,7 +14,18 @@
 namespace {
 
 struct Date { int year = 0; int month = 0; int day = 0; };
-struct Event { Date date; long long unixSeconds = 0; std::wstring model; TokenUsage total; std::optional<TokenUsage> last; };
+struct Event {
+    Date date;
+    long long unixSeconds = 0;
+    std::wstring model;
+    AttributionSource attribution = AttributionSource::MissingOrExplicitUnpriced;
+    TokenUsage total;
+    std::optional<TokenUsage> last;
+};
+struct ModelAttribution {
+    std::wstring model;
+    AttributionSource source = AttributionSource::CanonicalMetadata;
+};
 struct Session { std::filesystem::file_time_type modified; std::vector<Event> events; };
 
 std::wstring Wide(const std::string_view text) {
@@ -35,7 +46,7 @@ std::optional<std::string_view> EventType(const jsonlite::Value& line) {
     return type != nullptr ? type->AsString() : std::nullopt;
 }
 
-std::optional<std::wstring> CanonicalModelFromMetadata(const jsonlite::Value& line) {
+std::optional<ModelAttribution> CanonicalModelFromMetadata(const jsonlite::Value& line) {
     const auto type = EventType(line);
     const auto* payload = PayloadFor(line);
     if (!type || payload == nullptr) return std::nullopt;
@@ -50,7 +61,11 @@ std::optional<std::wstring> CanonicalModelFromMetadata(const jsonlite::Value& li
         model = settings != nullptr ? settings->Find("model") : nullptr;
     }
     const auto value = model != nullptr ? model->AsString() : std::nullopt;
-    return value && !value->empty() ? std::optional<std::wstring>(Wide(*value)) : std::nullopt;
+    if (value && !value->empty()) return ModelAttribution{Wide(*value), AttributionSource::CanonicalMetadata};
+
+    // Current OpenAI Codex ThreadSettingsSnapshot has no feature/review field.
+    // Without a published local signal, feature names must not imply a model.
+    return std::nullopt;
 }
 
 const jsonlite::Value* TokenUsageInfo(const jsonlite::Value& line) {
@@ -156,12 +171,27 @@ TokenUsage Difference(const TokenUsage& a, const TokenUsage& b) {
     return {a.inputTokens-b.inputTokens, a.cachedInputTokens-b.cachedInputTokens, a.cacheWriteInputTokens-b.cacheWriteInputTokens,
         a.outputTokens-b.outputTokens, a.totalTokens-b.totalTokens};
 }
+bool IsSameUsage(const TokenUsage& left, const TokenUsage& right) {
+    return left.inputTokens == right.inputTokens && left.cachedInputTokens == right.cachedInputTokens
+        && left.cacheWriteInputTokens == right.cacheWriteInputTokens && left.outputTokens == right.outputTokens
+        && left.totalTokens == right.totalTokens;
+}
+bool IsStructurallyValidLastUsage(const TokenUsage& usage) {
+    return usage.totalTokens > 0 && usage.inputTokens <= usage.totalTokens
+        && usage.outputTokens <= usage.totalTokens - usage.inputTokens
+        && usage.cachedInputTokens <= usage.inputTokens && usage.cacheWriteInputTokens <= usage.inputTokens;
+}
 void Add(TokenUsage* to, const TokenUsage& from) {
     to->inputTokens += from.inputTokens; to->cachedInputTokens += from.cachedInputTokens; to->cacheWriteInputTokens += from.cacheWriteInputTokens;
     to->outputTokens += from.outputTokens; to->totalTokens += from.totalTokens;
 }
-void AddToScope(LocalUsageScope* scope, const TokenUsage& usage, const std::wstring& model) {
-    scope->available = true; Add(&scope->usage, usage); Add(&scope->byModel[model], usage);
+void AddToScope(LocalUsageScope* scope, const TokenUsage& usage, const std::wstring& model,
+    AttributionSource attribution, long long unixSeconds, LedgerUsageSource usageSource = LedgerUsageSource::CumulativeDelta,
+    const TokenUsage* ledgerUsage = nullptr) {
+    scope->available = true;
+    Add(&scope->usage, usage);
+    Add(&scope->byModel[model], usage);
+    scope->entries.push_back({unixSeconds, model, attribution, ledgerUsage != nullptr ? *ledgerUsage : usage, usageSource});
 }
 
 std::filesystem::path ResolveHome(std::filesystem::path home) {
@@ -198,15 +228,19 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
         ++result.filesScanned;
         std::ifstream file(it->path(), std::ios::binary);
         std::string line; Session session; session.modified = it->last_write_time(error); std::wstring model;
+        AttributionSource attribution = AttributionSource::MissingOrExplicitUnpriced;
         bool malformed = false;
         while (std::getline(file, line)) {
             jsonlite::Parser parser(line); const auto parsed = parser.Parse();
             if (!parsed) { malformed = true; continue; }
-            if (const auto canonicalModel = CanonicalModelFromMetadata(*parsed)) model = *canonicalModel;
+            if (const auto canonicalModel = CanonicalModelFromMetadata(*parsed)) {
+                model = canonicalModel->model;
+                attribution = canonicalModel->source;
+            }
             const auto* info = TokenUsageInfo(*parsed);
             const auto total = UsageFrom(info != nullptr ? info->Find("total_token_usage") : nullptr);
             if (!total) continue;
-            Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.unixSeconds = ParseUnixSeconds(*parsed); event.model = model; event.total = *total;
+            Event event; event.date = ParseDate(*parsed, localUtcOffsetMinutesForTesting_); event.unixSeconds = ParseUnixSeconds(*parsed); event.model = model; event.attribution = attribution; event.total = *total;
             event.last = UsageFrom(info != nullptr ? info->Find("last_token_usage") : nullptr);
             session.events.push_back(std::move(event));
         }
@@ -220,23 +254,38 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
         LocalUsageScope sessionTotal;
         TokenUsage previous{}; bool havePrevious = false;
         for (const auto& event : session.events) {
-            if (event.last && &session == &sessions.back()) { result.last = {}; AddToScope(&result.last, *event.last, event.model); }
+            if (event.last && &session == &sessions.back()) {
+                result.last = {};
+                AddToScope(&result.last, *event.last, event.model, event.attribution, event.unixSeconds,
+                    LedgerUsageSource::LastTokenUsage);
+            }
+            const auto addAccountingIncrement = [&](const TokenUsage& increment) {
+                const bool useLast = event.last && IsStructurallyValidLastUsage(*event.last)
+                    && IsSameUsage(*event.last, increment);
+                const LedgerUsageSource source = useLast
+                    ? LedgerUsageSource::LastTokenUsage
+                    : LedgerUsageSource::CumulativeDelta;
+                const TokenUsage& pricedUsage = useLast ? *event.last : increment;
+                AddToScope(&sessionTotal, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                if (SameDate(event.date, today)) AddToScope(&result.today, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) {
+                    AddToScope(&result.weekly, increment, event.model, event.attribution, event.unixSeconds, source, &pricedUsage);
+                }
+            };
             if (!havePrevious) {
-                AddToScope(&sessionTotal, event.total, event.model);
-                if (SameDate(event.date, today)) AddToScope(&result.today, event.total, event.model);
-                if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, event.total, event.model);
+                addAccountingIncrement(event.total);
                 previous = event.total; havePrevious = true; continue;
             }
             if (!IsAtLeast(event.total, previous)) { previous = event.total; continue; }
+            if (IsSameUsage(event.total, previous)) continue;
             const TokenUsage delta = Difference(event.total, previous);
-            AddToScope(&sessionTotal, delta, event.model);
-            if (SameDate(event.date, today)) AddToScope(&result.today, delta, event.model);
-            if (weeklyStartUnixSeconds > 0 && event.unixSeconds >= weeklyStartUnixSeconds) AddToScope(&result.weekly, delta, event.model);
+            addAccountingIncrement(delta);
             previous = event.total;
         }
         result.tillNow.available = true;
         Add(&result.tillNow.usage, sessionTotal.usage);
         for (const auto& [model, usage] : sessionTotal.byModel) Add(&result.tillNow.byModel[model], usage);
+        result.tillNow.entries.insert(result.tillNow.entries.end(), sessionTotal.entries.begin(), sessionTotal.entries.end());
         if (&session == &sessions.back()) result.task = sessionTotal;
     }
     return result;

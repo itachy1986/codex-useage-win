@@ -7,12 +7,28 @@
 
 namespace {
 
-std::wstring FormatCost(const LocalUsageScope& scope) {
-    const CostEstimate cost = EstimateApiEquivalentCost(scope);
-    if (!cost.available) return L"N/A";
+std::wstring Money(double value) {
     wchar_t money[32] = {};
-    swprintf_s(money, cost.complete ? L"≈$%.2f" : L"≥$%.2f", cost.usd);
+    swprintf_s(money, L"$%.2f", value);
     return money;
+}
+
+std::wstring FormatCost(const LocalUsageScope& scope, PrimaryModel primaryModel, bool detailed = false) {
+    const CostEstimate cost = EstimateApiEquivalentCost(scope, primaryModel);
+    if (!cost.available) return L"N/A";
+    if (cost.hasUnpriced) {
+        std::wstring value = L"≥" + Money(cost.confirmedUsd);
+        if (cost.estimatedUsd > 0.0) {
+            value += detailed
+                ? L" + " + Money(cost.estimatedUsd) + L" estimated"
+                : L" +~" + Money(cost.estimatedUsd);
+        }
+        return value;
+    }
+    if (cost.usedPrimaryModelFallback) {
+        return L"~" + Money(cost.usd) + (detailed ? L" (estimated)" : L"");
+    }
+    return L"≈" + Money(cost.confirmedUsd);
 }
 
 std::wstring FormatCompactTokens(long long tokens) {
@@ -26,9 +42,9 @@ std::wstring FormatCompactTokens(long long tokens) {
     return buffer;
 }
 
-std::wstring FormatTokenAndCost(const LocalUsageScope& scope) {
+std::wstring FormatTokenAndCost(const LocalUsageScope& scope, PrimaryModel primaryModel, bool detailed = false) {
     if (!scope.available) return L"N/A";
-    return FormatCompactTokens(scope.usage.totalTokens) + L" · " + FormatCost(scope);
+    return FormatCompactTokens(scope.usage.totalTokens) + L" · " + FormatCost(scope, primaryModel, detailed);
 }
 
 std::wstring FormatRemaining(bool success, const UsageWindow& window) {
@@ -39,31 +55,34 @@ std::wstring FormatRemaining(bool success, const UsageWindow& window) {
 
 std::vector<TaskbarMetricCard> BuildTaskbarMetricCards(
     const UsageSnapshot& usage,
-    const LocalUsageSnapshot& localUsage) {
+    const LocalUsageSnapshot& localUsage,
+    PrimaryModel primaryModel) {
     std::vector<TaskbarMetricCard> cards;
     if (usage.success && usage.fiveHour.available) {
         cards.push_back({L"5H", std::to_wstring(usage.fiveHour.remainingPercent) + L"%"});
     }
     cards.push_back({L"周", FormatRemaining(usage.success, usage.weekly)});
-    cards.push_back({L"周消费", FormatCost(localUsage.weekly)});
-    cards.push_back({L"总消费", FormatCost(localUsage.tillNow)});
+    cards.push_back({L"周消费", FormatCost(localUsage.weekly, primaryModel)});
+    cards.push_back({L"总消费", FormatCost(localUsage.tillNow, primaryModel)});
     return cards;
 }
 
 std::vector<TaskbarMetricCard> BuildSimpleMetricCards(
     const UsageSnapshot& usage,
-    const LocalUsageSnapshot& localUsage) {
-    return BuildTaskbarMetricCards(usage, localUsage);
+    const LocalUsageSnapshot& localUsage,
+    PrimaryModel primaryModel) {
+    return BuildTaskbarMetricCards(usage, localUsage, primaryModel);
 }
 
 std::vector<TaskbarMetricCard> BuildStandardUsageMetricCards(
-    const LocalUsageSnapshot& localUsage) {
+    const LocalUsageSnapshot& localUsage,
+    PrimaryModel primaryModel) {
     return {
-        {L"Task", FormatTokenAndCost(localUsage.task)},
-        {L"Last", FormatTokenAndCost(localUsage.last)},
-        {L"Today", FormatTokenAndCost(localUsage.today)},
-        {L"周消费", FormatCost(localUsage.weekly)},
-        {L"总消费", FormatTokenAndCost(localUsage.tillNow)},
+        {L"Task", FormatTokenAndCost(localUsage.task, primaryModel, true)},
+        {L"Last", FormatTokenAndCost(localUsage.last, primaryModel, true)},
+        {L"Today", FormatTokenAndCost(localUsage.today, primaryModel, true)},
+        {L"周消费", FormatCost(localUsage.weekly, primaryModel, true)},
+        {L"总消费", FormatTokenAndCost(localUsage.tillNow, primaryModel, true)},
     };
 }
 

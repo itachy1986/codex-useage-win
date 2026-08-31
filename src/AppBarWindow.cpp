@@ -41,6 +41,11 @@ constexpr UINT kCommandCheckVersion = 15;
 constexpr UINT kCommandFullMode = 16;
 constexpr UINT kCommandTaskbarMode = 17;
 constexpr UINT kCommandRefreshToken = 18;
+constexpr UINT kCommandPrimaryModelAuto = 19;
+constexpr UINT kCommandPrimaryModelSol = 20;
+constexpr UINT kCommandPrimaryModelTerra = 21;
+constexpr UINT kCommandPrimaryModelLuna = 22;
+constexpr UINT kCommandPrimaryModelGpt55 = 23;
 constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 420;
 constexpr int kSimpleDefaultWidgetWidth = 300;
@@ -558,7 +563,7 @@ int AppBarWindow::GetMinimumWidgetWidth() const {
 }
 
 int AppBarWindow::GetTaskbarPreferredWidth() const {
-    const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_);
+    const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_, primaryModel_);
     const int labelHeight = ScaleForDpi(hwnd_, 12);
     const int valueHeight = ScaleForDpi(hwnd_, 17);
     const HWND target = hwnd_ != nullptr ? hwnd_ : GetDesktopWindow();
@@ -615,6 +620,21 @@ void AppBarWindow::SetLanguage(Language language) {
     language_ = language;
     if (hwnd_ != nullptr) {
         SetWindowTextW(hwnd_, LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"));
+        if (taskbarMode_) UpdateWindowBounds(false);
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+    SaveSettings();
+}
+
+void AppBarWindow::SetPrimaryModel(PrimaryModel model) {
+    if (primaryModel_ == model) {
+        return;
+    }
+
+    primaryModel_ = model;
+    if (hwnd_ != nullptr) {
+        // Costs are derived from the in-memory ledger, so changing this setting
+        // recalculates immediately without a rescan or a process restart.
         if (taskbarMode_) UpdateWindowBounds(false);
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
@@ -830,6 +850,10 @@ void AppBarWindow::LoadSettings() {
     language_ = GetPrivateProfileIntW(L"layout", L"language", 0, path.c_str()) == 1
         ? Language::Chinese
         : Language::English;
+    wchar_t primaryModel[32] = {};
+    GetPrivateProfileStringW(L"api_equivalent", L"primary_model", L"auto", primaryModel,
+        static_cast<DWORD>(std::size(primaryModel)), path.c_str());
+    primaryModel_ = PrimaryModelFromSetting(primaryModel);
     if (version < kLayoutVersion) {
         hasSavedRect_ = false;
         return;
@@ -851,13 +875,13 @@ void AppBarWindow::LoadSettings() {
 }
 
 void AppBarWindow::SaveSettings() const {
-    if (!hasSavedRect_) {
-        return;
-    }
-
     const std::wstring path = GetSettingsPath();
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    WritePrivateProfileStringW(L"api_equivalent", L"primary_model", PrimaryModelSetting(primaryModel_), path.c_str());
+    if (!hasSavedRect_) {
+        return;
+    }
     WritePrivateProfileStringW(L"layout", L"layout_version", std::to_wstring(kLayoutVersion).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"always_on_top", alwaysOnTop_ ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"layout", L"lock_position", lockPosition_ ? L"1" : L"0", path.c_str());
@@ -1594,7 +1618,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         const int cardPad = ScaleForDpi(hwnd_, 10);
         const int corner = ScaleForDpi(hwnd_, 9);
         const int labelHeight = ScaleForDpi(hwnd_, 16);
-        const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_);
+        const std::vector<TaskbarMetricCard> cards = BuildTaskbarMetricCards(snapshot_, localUsage_, primaryModel_);
         const COLORREF cardFill = lightTheme_ ? RGB(255, 255, 255) : RGB(39, 46, 42);
         const COLORREF cardBorder = lightTheme_ ? RGB(218, 224, 220) : RGB(71, 81, 75);
         const COLORREF cardShadow = lightTheme_ ? RGB(231, 235, 232) : RGB(12, 15, 14);
@@ -1706,7 +1730,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         const int gap = ScaleForDpi(hwnd_, 6);
         const int corner = ScaleForDpi(hwnd_, 9);
         const int cardPad = ScaleForDpi(hwnd_, 8);
-        const auto cards = BuildSimpleMetricCards(snapshot_, localUsage_);
+        const auto cards = BuildSimpleMetricCards(snapshot_, localUsage_, primaryModel_);
         const int rows = static_cast<int>((cards.size() + 1) / 2);
         const int cardHeight = std::max(1, (RectHeight(clientRect) - outerPad * 2 - std::max(0, rows - 1) * gap) / std::max(1, rows));
         const COLORREF cardFill = lightTheme_ ? RGB(255, 255, 255) : RGB(39, 46, 42);
@@ -1970,10 +1994,12 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
 
     // Local accounting is visually separated from account and reset controls.
     y += ScaleForDpi(hwnd_, 10);
-    const auto localCards = BuildStandardUsageMetricCards(localUsage_);
+    const auto localCards = BuildStandardUsageMetricCards(localUsage_, primaryModel_);
     const int localTitleHeight = ScaleForDpi(hwnd_, 18);
     RECT localTitleRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + localTitleHeight);
-    drawTextBlock(textFormatMetricLabel_.Get(), LocalizeText(L"Local usage", L"本地用量"), localTitleRect, textSecondary,
+    const std::wstring localUsageTitle = std::wstring(LocalizeText(L"Local usage", L"本地用量"))
+        + L" \u00b7 " + LocalizeText(L"Primary: ", L"主模型: ") + PrimaryModelDisplayName(primaryModel_);
+    drawTextBlock(textFormatMetricLabel_.Get(), localUsageTitle, localTitleRect, textSecondary,
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
     y = localTitleRect.bottom + ScaleForDpi(hwnd_, 4);
     const int localGap = ScaleForDpi(hwnd_, 6);
@@ -2070,6 +2096,7 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     HMENU languageMenu = CreatePopupMenu();
     HMENU refreshIntervalMenu = CreatePopupMenu();
     HMENU displayModeMenu = CreatePopupMenu();
+    HMENU primaryModelMenu = CreatePopupMenu();
     const bool launchAtStartup = IsLaunchAtStartupEnabled();
     const UINT alwaysOnTopMenuState = MF_STRING
         | ((alwaysOnTop_ || taskbarMode_) ? MF_CHECKED : MF_UNCHECKED)
@@ -2094,6 +2121,16 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         kCommandSimpleMode, LocalizeText(L"Simple mode", L"简单模式"));
     AppendMenuW(displayModeMenu, MF_STRING | (taskbarMode_ ? MF_CHECKED : MF_UNCHECKED),
         kCommandTaskbarMode, LocalizeText(L"Taskbar mode", L"任务栏模式"));
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Auto ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelAuto, L"Auto");
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt56Sol ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelSol, L"GPT-5.6 Sol");
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt56Terra ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelTerra, L"GPT-5.6 Terra");
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt56Luna ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelLuna, L"GPT-5.6 Luna");
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt55 ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelGpt55, L"GPT-5.5");
 
     AppendMenuW(menu, MF_STRING, kCommandRefresh, LocalizeText(L"Refresh now", L"立即刷新"));
     AppendMenuW(menu, MF_STRING | (tokenRefreshInFlight_ ? MF_GRAYED : 0),
@@ -2106,6 +2143,7 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     AppendMenuW(menu, MF_STRING | (lockPosition_ ? MF_CHECKED : MF_UNCHECKED),
         kCommandLockPosition, LocalizeText(L"Lock position", L"固定位置"));
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(displayModeMenu), LocalizeText(L"Display mode", L"显示模式"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(primaryModelMenu), L"API Equivalent - Primary model");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(languageMenu), LocalizeText(L"Language", L"语言"));
     AppendMenuW(menu, MF_STRING, kCommandResetPosition, LocalizeText(L"Reset widget position", L"重置组件位置"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -2145,6 +2183,16 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         SetDisplayMode(true, false);
     } else if (command == kCommandTaskbarMode) {
         SetDisplayMode(false, true);
+    } else if (command == kCommandPrimaryModelAuto) {
+        SetPrimaryModel(PrimaryModel::Auto);
+    } else if (command == kCommandPrimaryModelSol) {
+        SetPrimaryModel(PrimaryModel::Gpt56Sol);
+    } else if (command == kCommandPrimaryModelTerra) {
+        SetPrimaryModel(PrimaryModel::Gpt56Terra);
+    } else if (command == kCommandPrimaryModelLuna) {
+        SetPrimaryModel(PrimaryModel::Gpt56Luna);
+    } else if (command == kCommandPrimaryModelGpt55) {
+        SetPrimaryModel(PrimaryModel::Gpt55);
     } else if (command == kCommandLanguageEnglish) {
         SetLanguage(Language::English);
     } else if (command == kCommandLanguageChinese) {
