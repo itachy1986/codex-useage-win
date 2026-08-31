@@ -435,8 +435,35 @@ void TestCostAccuracyV2() {
     presentation.tillNow = mixed;
     UsageSnapshot remote;
     const auto cards = BuildTaskbarMetricCards(remote, presentation, PrimaryModel::Gpt56Luna);
-    Expect(cards.size() == 3 && cards[1].value.find(L"\u2265$8.00") != std::wstring::npos,
-        "Compact cards show confirmed lower bounds when any component is unpriced");
+    Expect(cards.size() == 3 && cards[1].value == L"\u2265$8.00 +~$0.40",
+        "Taskbar compact cards retain both confirmed and estimated components when unpriced usage remains");
+    const auto simpleMixed = BuildSimpleMetricCards(remote, presentation, PrimaryModel::Gpt56Luna);
+    Expect(simpleMixed.size() == 3 && simpleMixed[1].value == L"\u2265$8.00 +~$0.40",
+        "Simple compact cards retain both confirmed and estimated components when unpriced usage remains");
+
+    LocalUsageScope confirmedOnly;
+    confirmedOnly.available = true;
+    confirmedOnly.entries.push_back({1, L"gpt-5.6-sol", AttributionSource::CanonicalMetadata, shortSol});
+    LocalUsageSnapshot confirmedPresentation;
+    confirmedPresentation.weekly = confirmedOnly;
+    confirmedPresentation.tillNow = confirmedOnly;
+    const auto confirmedCards = BuildTaskbarMetricCards(remote, confirmedPresentation);
+    Expect(confirmedCards.size() == 3 && confirmedCards[1].value == L"\u2248$0.40",
+        "Compact confirmed-only cost keeps the approximate marker");
+
+    LocalUsageSnapshot estimatedPresentation;
+    estimatedPresentation.weekly = missing;
+    estimatedPresentation.tillNow = missing;
+    const auto estimatedCards = BuildTaskbarMetricCards(remote, estimatedPresentation, PrimaryModel::Gpt56Terra);
+    Expect(estimatedCards.size() == 3 && estimatedCards[1].value == L"~$4.00",
+        "Compact Primary-only cost keeps the estimated total marker");
+
+    LocalUsageSnapshot unpricedPresentation;
+    unpricedPresentation.weekly = explicitUnknown;
+    unpricedPresentation.tillNow = explicitUnknown;
+    const auto unpricedCards = BuildTaskbarMetricCards(remote, unpricedPresentation, PrimaryModel::Gpt56Terra);
+    Expect(unpricedCards.size() == 3 && unpricedCards[1].value == L"\u2265$0.00",
+        "Compact explicit-unpriced cost keeps a confirmed lower bound only");
     const auto standard = BuildStandardUsageMetricCards(presentation, PrimaryModel::Gpt56Luna);
     Expect(standard[3].value.find(L"estimated") != std::wstring::npos,
         "Standard presentation exposes fallback estimates separately");

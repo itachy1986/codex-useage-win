@@ -18,7 +18,11 @@ std::wstring FormatCost(const LocalUsageScope& scope, PrimaryModel primaryModel,
     if (!cost.available) return L"N/A";
     if (cost.hasUnpriced) {
         std::wstring value = L"≥" + Money(cost.confirmedUsd);
-        if (detailed && cost.estimatedUsd > 0.0) value += L" + " + Money(cost.estimatedUsd) + L" estimated";
+        if (cost.estimatedUsd > 0.0) {
+            value += detailed
+                ? L" + " + Money(cost.estimatedUsd) + L" estimated"
+                : L" +~" + Money(cost.estimatedUsd);
+        }
         return value;
     }
     if (cost.usedPrimaryModelFallback) {
