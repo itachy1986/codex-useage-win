@@ -277,6 +277,7 @@ LocalUsageSnapshot LocalUsageReader::ScanForLocalDate(int year, int month, int d
                 previous = event.total; havePrevious = true; continue;
             }
             if (!IsAtLeast(event.total, previous)) { previous = event.total; continue; }
+            if (IsSameUsage(event.total, previous)) continue;
             const TokenUsage delta = Difference(event.total, previous);
             addAccountingIncrement(delta);
             previous = event.total;
