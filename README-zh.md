@@ -68,6 +68,7 @@ API 等价成本按模型及 Token 类别计算，包括可验证的 uncached in
 │          ≥$209.75          │
 └────────────────────────────┘
 ```
+<img width="603" height="278" alt="image" src="https://github.com/user-attachments/assets/e29c3920-2b5b-4a95-83b8-289a9988d104" />
 
 ### Taskbar / 任务栏模式
 
@@ -78,6 +79,7 @@ API 等价成本按模型及 Token 类别计算，包括可验证的 uncached in
 ```text
 [ 周 82% ]  [ 周消费 ≥$28.80 ]  [ 总消费 ≥$209.75 ]
 ```
+![Uploading image.png…]()
 
 ## 功能
 
