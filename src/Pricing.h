@@ -30,6 +30,9 @@ enum class PrimaryModel {
     Gpt56Terra,
     Gpt56Luna,
     Gpt55,
+    Gpt6Astra,
+    Gpt6Sol,
+    Gpt6Luna,
 };
 
 struct UsageLedgerEntry {

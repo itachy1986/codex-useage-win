@@ -46,6 +46,9 @@ constexpr UINT kCommandPrimaryModelSol = 20;
 constexpr UINT kCommandPrimaryModelTerra = 21;
 constexpr UINT kCommandPrimaryModelLuna = 22;
 constexpr UINT kCommandPrimaryModelGpt55 = 23;
+constexpr UINT kCommandPrimaryModelGpt6Astra = 24;
+constexpr UINT kCommandPrimaryModelGpt6Sol = 25;
+constexpr UINT kCommandPrimaryModelGpt6Luna = 26;
 constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 420;
 constexpr int kSimpleDefaultWidgetWidth = 300;
@@ -2123,6 +2126,12 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         kCommandTaskbarMode, LocalizeText(L"Taskbar mode", L"任务栏模式"));
     AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Auto ? MF_CHECKED : MF_UNCHECKED),
         kCommandPrimaryModelAuto, L"Auto");
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt6Astra ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelGpt6Astra, PrimaryModelDisplayName(PrimaryModel::Gpt6Astra));
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt6Sol ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelGpt6Sol, PrimaryModelDisplayName(PrimaryModel::Gpt6Sol));
+    AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt6Luna ? MF_CHECKED : MF_UNCHECKED),
+        kCommandPrimaryModelGpt6Luna, PrimaryModelDisplayName(PrimaryModel::Gpt6Luna));
     AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt56Sol ? MF_CHECKED : MF_UNCHECKED),
         kCommandPrimaryModelSol, L"GPT-5.6 Sol");
     AppendMenuW(primaryModelMenu, MF_STRING | (primaryModel_ == PrimaryModel::Gpt56Terra ? MF_CHECKED : MF_UNCHECKED),
@@ -2185,6 +2194,12 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         SetDisplayMode(false, true);
     } else if (command == kCommandPrimaryModelAuto) {
         SetPrimaryModel(PrimaryModel::Auto);
+    } else if (command == kCommandPrimaryModelGpt6Astra) {
+        SetPrimaryModel(PrimaryModel::Gpt6Astra);
+    } else if (command == kCommandPrimaryModelGpt6Sol) {
+        SetPrimaryModel(PrimaryModel::Gpt6Sol);
+    } else if (command == kCommandPrimaryModelGpt6Luna) {
+        SetPrimaryModel(PrimaryModel::Gpt6Luna);
     } else if (command == kCommandPrimaryModelSol) {
         SetPrimaryModel(PrimaryModel::Gpt56Sol);
     } else if (command == kCommandPrimaryModelTerra) {

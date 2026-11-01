@@ -20,6 +20,14 @@ std::wstring Normalize(std::wstring model) {
 }
 
 const Rate* FindRate(const std::wstring& rawModel) {
+    // GPT-6 Standard API-equivalent rates, verified 2026-11-01:
+    // https://developers.openai.com/api/docs/models/gpt-6-astra
+    // https://developers.openai.com/api/docs/models/gpt-6-sol
+    // https://developers.openai.com/api/docs/models/gpt-6-luna
+    // Cache writes use the documented 1.25x rate; >272K uses long-context rates.
+    static const Rate gpt6Astra{10.0, 1.0, 50.0, 1.25, true};
+    static const Rate gpt6Sol{2.0, 0.2, 10.0, 1.25, true};
+    static const Rate gpt6Luna{0.1, 0.01, 0.5, 1.25, true};
     // OpenAI ChatGPT Work / Codex Rate Card and model pages, verified 2026-08-31.
     // Cache-write billing is documented only for GPT-5.6 and later.
     static const Rate sol{4.0, 0.4, 20.0, 1.25, true};
@@ -31,6 +39,9 @@ const Rate* FindRate(const std::wstring& rawModel) {
     static const Rate gpt53Codex{1.75, 0.175, 14.0, std::nullopt, false};
     static const Rate gpt52{1.75, 0.175, 14.0, std::nullopt, false};
     const std::wstring model = Normalize(rawModel);
+    if (model == L"gpt-6-astra") return &gpt6Astra;
+    if (model == L"gpt-6-sol") return &gpt6Sol;
+    if (model == L"gpt-6-luna") return &gpt6Luna;
     if (model == L"gpt-5.6" || model == L"gpt-5.6-sol") return &sol;
     if (model == L"gpt-5.6-terra") return &terra;
     if (model == L"gpt-5.6-luna") return &luna;
@@ -44,6 +55,9 @@ const Rate* FindRate(const std::wstring& rawModel) {
 
 const wchar_t* CanonicalPrimaryModel(PrimaryModel model) {
     switch (model) {
+        case PrimaryModel::Gpt6Astra: return L"gpt-6-astra";
+        case PrimaryModel::Gpt6Sol: return L"gpt-6-sol";
+        case PrimaryModel::Gpt6Luna: return L"gpt-6-luna";
         case PrimaryModel::Gpt56Sol: return L"gpt-5.6-sol";
         case PrimaryModel::Gpt56Terra: return L"gpt-5.6-terra";
         case PrimaryModel::Gpt56Luna: return L"gpt-5.6-luna";
@@ -109,11 +123,14 @@ CostEstimate PriceEntry(const UsageLedgerEntry& entry, PrimaryModel primaryModel
 }  // namespace
 
 const wchar_t* PricingVersion() {
-    return L"OpenAI ChatGPT Work/Codex Rate Card + model pages, verified 2026-08-31";
+    return L"OpenAI Standard API-equivalent: GPT-6 verified 2026-11-01; legacy rates 2026-08-31";
 }
 
 const wchar_t* PrimaryModelSetting(PrimaryModel model) {
     switch (model) {
+        case PrimaryModel::Gpt6Astra: return L"gpt-6-astra";
+        case PrimaryModel::Gpt6Sol: return L"gpt-6-sol";
+        case PrimaryModel::Gpt6Luna: return L"gpt-6-luna";
         case PrimaryModel::Gpt56Sol: return L"sol";
         case PrimaryModel::Gpt56Terra: return L"terra";
         case PrimaryModel::Gpt56Luna: return L"luna";
@@ -125,6 +142,9 @@ const wchar_t* PrimaryModelSetting(PrimaryModel model) {
 
 PrimaryModel PrimaryModelFromSetting(const std::wstring& value) {
     const std::wstring normalized = Normalize(value);
+    if (normalized == L"gpt-6-astra") return PrimaryModel::Gpt6Astra;
+    if (normalized == L"gpt-6-sol") return PrimaryModel::Gpt6Sol;
+    if (normalized == L"gpt-6-luna") return PrimaryModel::Gpt6Luna;
     if (normalized == L"sol") return PrimaryModel::Gpt56Sol;
     if (normalized == L"terra") return PrimaryModel::Gpt56Terra;
     if (normalized == L"luna") return PrimaryModel::Gpt56Luna;
@@ -134,6 +154,9 @@ PrimaryModel PrimaryModelFromSetting(const std::wstring& value) {
 
 const wchar_t* PrimaryModelDisplayName(PrimaryModel model) {
     switch (model) {
+        case PrimaryModel::Gpt6Astra: return L"GPT-6 Astra";
+        case PrimaryModel::Gpt6Sol: return L"GPT-6 Sol";
+        case PrimaryModel::Gpt6Luna: return L"GPT-6 Luna";
         case PrimaryModel::Gpt56Sol: return L"GPT-5.6 Sol";
         case PrimaryModel::Gpt56Terra: return L"GPT-5.6 Terra";
         case PrimaryModel::Gpt56Luna: return L"GPT-5.6 Luna";
