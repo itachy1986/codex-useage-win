@@ -469,6 +469,76 @@ void TestCostAccuracyV2() {
         "Standard presentation exposes fallback estimates separately");
 }
 
+void TestGpt6Pricing() {
+    const TokenUsage usage{100000, 40000, 10000, 10000, 110000};
+    const std::pair<const wchar_t*, double> cases[] = {
+        {L"gpt-6-astra", 1.165}, {L"gpt-6-sol", 0.233}, {L"gpt-6-luna", 0.01165},
+        {L"GPT-6-ASTRA", 1.165},
+    };
+    for (const auto& [model, expected] : cases) {
+        const auto cost = EstimateApiEquivalentCost(usage, model);
+        Expect(cost.available && cost.complete && !cost.hasUnpriced
+                && std::abs(cost.confirmedUsd - expected) < 0.00000001,
+            "GPT-6 prices uncached input, cached input, cache writes and output separately");
+    }
+    TokenUsage boundary{272000, 40000, 10000, 10000, 282000};
+    Expect(std::abs(EstimateApiEquivalentCost(boundary, L"gpt-6-astra").usd - 2.885) < 0.00000001,
+        "GPT-6 at 272K input tokens retains short-context pricing");
+    ++boundary.inputTokens;
+    ++boundary.totalTokens;
+    Expect(std::abs(EstimateApiEquivalentCost(boundary, L"gpt-6-astra").usd - 5.52002) < 0.00000001,
+        "GPT-6 above 272K applies long-context multipliers to the entire request");
+    Expect(!EstimateApiEquivalentCost(usage, L"gpt-6-unknown").available
+            && !EstimateApiEquivalentCost(usage, L"codex-auto-review").available,
+        "Unpublished model IDs must not inherit GPT-6 pricing by prefix");
+
+    for (const auto* model : {L"gpt-6-astra", L"gpt-6-sol", L"gpt-6-luna"}) {
+        const auto primary = PrimaryModelFromSetting(model);
+        Expect(primary != PrimaryModel::Auto && std::wstring(PrimaryModelSetting(primary)) == model,
+            "GPT-6 Primary model settings round-trip independently of legacy Sol/Terra/Luna settings");
+        LocalUsageScope missing;
+        missing.available = true;
+        missing.entries.push_back({1, L"", AttributionSource::MissingOrExplicitUnpriced, usage});
+        const auto estimate = EstimateApiEquivalentCost(missing, primary);
+        Expect(estimate.complete && estimate.usedPrimaryModelFallback && estimate.confirmedUsd == 0.0
+                && std::abs(estimate.estimatedUsd - EstimateApiEquivalentCost(usage, model).usd) < 0.00000001,
+            "GPT-6 Primary prices missing metadata only as an estimate");
+        missing.entries[0].model = L"codex-auto-review";
+        const auto unknown = EstimateApiEquivalentCost(missing, primary);
+        Expect(unknown.hasUnpriced && !unknown.usedPrimaryModelFallback && unknown.usd == 0.0,
+            "GPT-6 Primary must not overwrite an explicit unpriced model");
+    }
+    Expect(PrimaryModelFromSetting(L"sol") == PrimaryModel::Gpt56Sol
+            && PrimaryModelFromSetting(L"terra") == PrimaryModel::Gpt56Terra
+            && PrimaryModelFromSetting(L"luna") == PrimaryModel::Gpt56Luna,
+        "Existing saved Primary choices keep their original model generation");
+}
+
+void TestTopLevelTurnContext() {
+    const auto root = MakeFixtureRoot();
+    WriteSession(root, "current.jsonl",
+        ThreadSettingsEvent("2026-08-30T10:00:00Z", "gpt-5.6-sol")
+        + "{\"timestamp\":\"2026-08-30T10:01:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6-astra\"}}\n"
+        + "{\"type\":\"response_item\",\"payload\":{\"model\":\"gpt-6-sol\",\"nested\":{\"model\":\"gpt-6-luna\"}}}\n"
+        + TokenEventWithLast("2026-08-30T10:02:00Z", 100000, 10000, 110000, 100000, 10000, 110000));
+    // 2026-08-30 00:00 UTC: include the synthetic request in the weekly window.
+    const auto local = LocalUsageReader(root, 0).ScanForLocalDate(2026, 8, 30, 1788048000);
+    Expect(local.task.entries.size() == 1 && local.task.entries[0].model == L"gpt-6-astra"
+            && local.task.entries[0].attribution == AttributionSource::CanonicalMetadata,
+        "Top-level turn_context overrides older model settings without reading arbitrary model keys");
+    const auto confirmed = EstimateApiEquivalentCost(local.weekly, PrimaryModel::Gpt56Terra);
+    Expect(confirmed.complete && !confirmed.usedPrimaryModelFallback
+            && std::abs(confirmed.confirmedUsd - 1.5) < 0.00000001,
+        "Canonical GPT-6 usage is confirmed regardless of the saved Primary fallback");
+    const auto taskbar = BuildTaskbarMetricCards({}, local);
+    const auto simple = BuildSimpleMetricCards({}, local);
+    const auto standard = BuildStandardUsageMetricCards(local);
+    Expect(taskbar.size() == 3 && taskbar[1].value == L"\u2248$1.50" && taskbar[2].value == L"\u2248$1.50"
+            && simple[1].value == taskbar[1].value && standard[3].value == taskbar[1].value,
+        "GPT-6 weekly and lifetime costs render in Taskbar, Simple and Standard modes");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -480,5 +550,7 @@ int main() {
     TestStandardAndSimplePresentations();
     TestFixturesAreRedacted();
     TestCostAccuracyV2();
+    TestGpt6Pricing();
+    TestTopLevelTurnContext();
     return failures == 0 ? 0 : 1;
 }

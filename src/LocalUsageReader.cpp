@@ -49,14 +49,19 @@ std::optional<std::string_view> EventType(const jsonlite::Value& line) {
 std::optional<ModelAttribution> CanonicalModelFromMetadata(const jsonlite::Value& line) {
     const auto type = EventType(line);
     const auto* payload = PayloadFor(line);
-    if (!type || payload == nullptr) return std::nullopt;
+    if (payload == nullptr) return std::nullopt;
+    const auto* outerTypeNode = line.Find("type");
+    const auto outerType = outerTypeNode != nullptr ? outerTypeNode->AsString() : std::nullopt;
 
     // Codex rollout metadata owns model state. Do not recursively inspect
     // arbitrary nested objects: tool payloads can also contain a "model" key.
     const jsonlite::Value* model = nullptr;
-    if (*type == "turn_context") {
+    // Current rollouts tag turn_context on the outer record. Retain the
+    // payload-tagged legacy form, but never interpret response/tool data as metadata.
+    if ((outerType && *outerType == "turn_context")
+        || (!outerType && type && *type == "turn_context")) {
         model = payload->Find("model");
-    } else if (*type == "thread_settings_applied") {
+    } else if ((!outerType || *outerType == "event_msg") && type && *type == "thread_settings_applied") {
         const auto* settings = payload->Find("thread_settings");
         model = settings != nullptr ? settings->Find("model") : nullptr;
     }
